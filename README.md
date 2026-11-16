@@ -68,6 +68,15 @@ makepkg -si
 资源在构建期从 `pkgver` 生成，和 `WorkBuddy.exe` 一致；它收到 URL 后转调
 `winebrowser.exe`，再经宿主 `xdg-open` 落到 `/usr/bin/workbuddy-win`。
 
+版本之外，企业微信还会取这个 exe 的签名者 **CN** 和内置白名单比对（只认
+`Tencent Technology (Shenzhen) Company Limited`），不匹配同样只弹一句
+打开失败、且根本不会执行转发器。`PKGBUILD` 因此在构建期用 openssl 生成一次性
+CA + leaf，leaf 主题照抄腾讯证书，再用 `jsign` 做 Authenticode 签名。Wine 的
+`wintrust` 不做信任链校验，所以自签名足够；私钥不落仓库、不进包。
+
+转发器每步都往 `%TEMP%\workbuddy-protocol.log` 记一行，排查时先看它有没有新
+记录，能立刻区分“没被调用”和“被调用了但转发失败”。
+
 宿主侧要求本包的 desktop 文件声明
 `MimeType=x-scheme-handler/workbuddy;`，并且 `Exec` 用绝对路径。检查：
 
@@ -82,6 +91,7 @@ xdg-mime query default x-scheme-handler/workbuddy
 - GDI 控件汉字方框：派生一份带汉字的 Tahoma
 - Electron 在 Wine 下启动崩溃：`--no-sandbox`
 - 企业微信提示“WorkBuddy 版本过低”：带版本资源的协议转发器
+- 企业微信弹 `Failed to open WorkBuddy`：转发器签名者 CN 对齐腾讯白名单
 
 细节见 `PITFALLS.md`。
 
