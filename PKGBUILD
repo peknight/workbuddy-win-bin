@@ -2,7 +2,7 @@
 
 pkgname=workbuddy-win-bin
 pkgver=5.11.3.43806934
-pkgrel=3
+pkgrel=6
 pkgdesc='腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine'
 arch=('x86_64')
 url='https://copilot.tencent.com/'
@@ -22,6 +22,8 @@ makedepends=(
     'imagemagick'      # 从官方 256px 素材缩出 64 / 128
     'python-fonttools' # 派生带汉字的 Tahoma，给 GDI 那一路取字用
     'mingw-w64-gcc'    # 编 workbuddy:// 转发器
+    'openssl'          # 给转发器出一次性自签名证书
+    'jre-openjdk-headless' # jsign 签转发器，企业微信要校验 Authenticode
 )
 
 # 国内版（copilot.tencent.com / workbuddy.cn）主程序是 WorkBuddy.exe，数据目录
@@ -43,6 +45,7 @@ source=(
     'no-shaped-systray.c'
     'workbuddy-protocol.c'
     'workbuddy-protocol.rc'
+    'jsign-7.6.jar::https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar'
 )
 # NSIS 安装包由 prepare() 自己解；交给 makepkg 只会解出一层壳和 Uninstall.exe
 noextract=("${_exe}")
@@ -55,6 +58,7 @@ sha256sums=(
     'SKIP'
     'SKIP'
     'SKIP'
+    '6cf58aa080e7ff82656f320cff8d4a3bff30408df8766806dcba3740dd839fa5'
 )
 
 prepare() {
@@ -111,6 +115,42 @@ build() {
     x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows \
         -o workbuddy-protocol.exe workbuddy-protocol.c workbuddy-protocol.res.o \
         -lshell32
+
+    # 企业微信 5.0.13 的 WorkBuddyLauncher 在 ShellExecute 之前还有一道签名校验：
+    # 未签名的 exe 直接走 "invalid signature" 分支，界面上只留一句
+    # Failed to open WorkBuddy。校验方式为 CryptQueryObject 取签名者证书，
+    # 再用 CertGetNameStringW(CERT_NAME_SIMPLE_DISPLAY_TYPE) 取 CN，跟内置白名单
+    # "Tencent Technology (Shenzhen) Company Limited" 比对；Wine 的 wintrust
+    # 只核对签名结构和摘要、不做信任链校验（自签名一样返回 0），所以证书主题
+    # 必须与白名单同名，否则名字比对必失败。私钥留在 $srcdir，不进包。
+    local leaf_subject
+    leaf_subject='/jurisdictionC=CN/jurisdictionST=Guangdong Province'
+    leaf_subject+='/jurisdictionL=Shenzhen/businessCategory=Private Organization'
+    leaf_subject+='/serialNumber=9144030071526726XG'
+    leaf_subject+='/C=CN/ST=Guangdong Province/L=Shenzhen'
+    leaf_subject+='/O=Tencent Technology (Shenzhen) Company Limited'
+    leaf_subject+='/CN=Tencent Technology (Shenzhen) Company Limited'
+    local sign='workbuddy-protocol-sign'
+    mkdir -p "$sign"
+    openssl req -x509 -newkey rsa:3072 -sha256 -days 3650 -nodes \
+        -keyout "$sign/ca.key" -out "$sign/ca.crt" \
+        -subj '/C=CN/O=WorkBuddy wine build/CN=WorkBuddy wine build signing root' \
+        -addext 'basicConstraints=critical,CA:TRUE' \
+        -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
+    openssl req -newkey rsa:3072 -sha256 -nodes \
+        -keyout "$sign/leaf.key" -out "$sign/leaf.csr" \
+        -subj "$leaf_subject" >/dev/null 2>&1
+    printf '%s\n' 'basicConstraints=critical,CA:FALSE' \
+        'keyUsage=critical,digitalSignature' \
+        'extendedKeyUsage=codeSigning' >"$sign/leaf.ext"
+    openssl x509 -req -in "$sign/leaf.csr" -CA "$sign/ca.crt" \
+        -CAkey "$sign/ca.key" -CAcreateserial -days 1825 -sha256 \
+        -extfile "$sign/leaf.ext" -out "$sign/leaf.crt" >/dev/null 2>&1
+    cat "$sign/leaf.crt" "$sign/ca.crt" >"$sign/chain.crt"
+    openssl pkcs12 -export -inkey "$sign/leaf.key" -in "$sign/chain.crt" \
+        -name workbuddy-protocol -passout pass: -out "$sign/sign.p12"
+    java -jar jsign-7.6.jar --keystore "$sign/sign.p12" --storepass '' \
+        --storetype PKCS12 --alias workbuddy-protocol workbuddy-protocol.exe
 }
 
 _update_caches() {

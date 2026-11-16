@@ -8,3 +8,4 @@ pkg/
 *.o
 *.so
 workbuddy-protocol.build.rc
+jsign-*.jar
