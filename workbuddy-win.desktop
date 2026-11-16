@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=WorkBuddy (Windows, Wine 11)
+Name[zh_CN]=@APP_NAME@
+Comment=Tencent WorkBuddy Windows build running on upstream wine 11
+Comment[zh_CN]=通过发行版自带的 wine 11 运行的 WorkBuddy 国内版 Windows 客户端
+# 绝对路径：避免 ~/.local/bin 之类的前置目录里有同名脚本截胡
+Exec=/usr/bin/@BIN@ %u
+Icon=@PKGNAME@
+Terminal=false
+Categories=Development;
+MimeType=x-scheme-handler/workbuddy;
+# 窗口真实的 WM_CLASS，桌面环境靠它归组。上游 wine 固定取进程名，改不了
+# （WINE_WMCLASS 是 deepin 给 winex11 加的补丁，发行版 wine 不认）
+StartupWMClass=workbuddy.exe
+StartupNotify=true

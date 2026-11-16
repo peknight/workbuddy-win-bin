@@ -1,0 +1,107 @@
+# WorkBuddy on Wine 11 踩坑记录
+
+## 1. 国内版和国际版不是同一个产品
+
+- 国内版：`WorkBuddy.exe`，数据目录 `.workbuddy`，域名
+  `copilot.tencent.com` / `www.workbuddy.cn`；
+- 国际版：`WorkBuddyAI.exe`，数据目录 `.workbuddy-ai`，域名
+  `workbuddy.ai`。
+
+企业账号和企业微信入口只在国内版上通。下载时认准
+`WorkBuddy-win32-x64-user-<version>-<build>.exe`，国际版的文件名带 `AI`。
+
+## 2. NSIS 安装包要拆两层
+
+`7z x` 官方 exe 只得到 NSIS 外壳，真正的程序在
+`$PLUGINSDIR/app-64.7z`。再解这一层才是 `app/`。另外安装器会把
+`resources/` 下两个 mp4 加载动画直接铺进安装目录，解包时也要合并进
+`app/resources/`，否则部分界面会缺动画。
+
+## 3. 必须加 `--no-sandbox`
+
+Electron 在 Wine 下开着 Chromium sandbox 会起不来（或子进程反复崩）。
+启动器固定传 `--no-sandbox`。
+
+## 4. `mscoree,mshtml` 要禁用
+
+程序会探测 .NET / IE 组件，Wine 自带的 `mscoree`、`mshtml` 会把它带进
+多余的安装流程甚至崩溃。启动器设置：
+
+```bash
+WINEDLLOVERRIDES='mscoree,mshtml='
+```
+
+## 5. GDI 那一路的汉字要单独喂
+
+Electron 界面走 DirectWrite，能落到 Wine 的 Noto Sans CJK 回退链；但部分
+原生控件按家族名取 Tahoma，而 Wine 自带的 `tahoma.ttf` 没有汉字。
+`make-tahoma.py` 从文泉驿微米黑派生 `tahoma.ttf` / `tahomabd.ttf`，装进
+prefix 的 `C:\windows\Fonts`，再应用替换表。启动器只在文件变化时覆盖。
+
+## 6. 托盘图标黑底加边框
+
+Wine 会给托盘里的 XEMBED 窗口设 bounding shape（实测 22x22 窗口有 9 个
+矩形，其中还有越界的 `[22,0 106x3]`），GTK 状态栏按 shape 画出来就是
+一块黑底加边框。
+
+`no-shaped-systray.c` 编成 `.so` 后由启动器 `LD_PRELOAD`。它只处理同时
+满足以下条件的窗口，避免误伤正常窗口：
+
+- compositor 正在运行；
+- 窗口 depth 是 32；
+- 宽高都不超过 64；
+- 带 `_XEMBED_INFO`，或者已被 reparent 到托盘。
+
+只 `XShapeCombineMask(..., ShapeBounding, ..., None, ...)`，不碰
+`ShapeInput`，也不设空矩形（空矩形会让窗口点不到）。
+
+## 7. 企业微信提示“WorkBuddy 版本过低”
+
+**现象**：WorkBuddy 已经是最新版，企业微信机器人会话里点跳转登录仍弹
+“版本过低”。
+
+**原因**：企业微信 5.0.13 的 `WorkBuddyLauncher` 会：
+
+1. 读 `HKCR\workbuddy\shell\open\command` 里的 exe 路径；
+2. 用 `GetFileVersionInfoW` 读它的 `FileVersion`；
+3. 和系统配置 `workbuddy_aibot_min_version_pc` 比较。
+
+协议如果直接指向 `winebrowser.exe`，这个纯 Wine 程序没有 VERSIONINFO，
+企业微信就得到“路径存在、版本读取失败”，走“版本过低”而不是“未安装”。
+
+**解法**：本包提供 `workbuddy-protocol.exe`，构建期从 `pkgver` 生成
+`FileVersion` / `ProductVersion`，行为和 winebrowser 一样（转发 URL 给
+`winebrowser.exe`）。`wecom-win-bin` 的协议注册指向它。WorkBuddy 没装时
+路径不存在，企业微信会正确显示“未安装”。
+
+## 8. desktop 的 `Exec` 要用绝对路径
+
+`Exec=workbuddy-win %u` 会按 `PATH` 解析，`~/.local/bin` 里如果还有旧的
+同名启动器就会截胡，`workbuddy://` 被送进另一套安装。写成
+`Exec=/usr/bin/workbuddy-win %u`。
+
+同时必须声明：
+
+```
+MimeType=x-scheme-handler/workbuddy;
+```
+
+否则 `xdg-open workbuddy://...` 找不到宿主处理程序。
+
+## 9. `WM_CLASS` 只能是 `workbuddy.exe`
+
+上游 wine 按进程名生成 `WM_CLASS`，不认 `WINE_WMCLASS`（那是 deepin 给
+winex11 打的补丁）。桌面入口的 `StartupWMClass=workbuddy.exe` 必须和实际
+值一致，否则任务栏归组和窗口修复工具都认不出来。
+
+## 10. 数据目录在 prefix 里
+
+Electron 的 userData 在 `C:\users\<user>\.workbuddy`，也就是
+`$WINEPREFIX/drive_c/users/<user>/.workbuddy`。删包不删 prefix 登录态就还在；
+反过来，想彻底重来就删 prefix。
+
+## 11. 升级时不要动 prefix
+
+包升级只替换 `/usr/lib/workbuddy-win-bin/app`。prefix 里的
+`.workbuddy`（登录态、会话、下载的二进制）保持不动。`pkgver` 变化后
+转发器版本资源自动更新，企业微信下次点击时重新读取。

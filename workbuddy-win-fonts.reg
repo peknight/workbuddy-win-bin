@@ -1,0 +1,52 @@
+Windows Registry Editor Version 5.00
+
+; wine 11 的 GDI 和 DirectWrite 都读这张替换表
+; （gdi32 的 load_font_replacements、dwrite/font.c 的 fontcollection_add_replacements）。
+;
+; GDI 侧：原生控件、RichEdit 输入框按字体名取字，全部落到文泉驿。
+; DirectWrite 侧：Electron 不吃上面的家族名，但它有自己的 CJK 回退链
+; （dwrite/analyzer.c 的 system_fallback_config 指向 Noto Sans CJK），
+; 只要把 Noto 这几个家族名别名到本机字体就有中文字形，
+; 不需要再往 prefix 里塞更多派生字体。
+[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]
+"Tahoma"="WenQuanYi Micro Hei"
+"Noto Sans CJK SC"="WenQuanYi Micro Hei"
+"Noto Sans CJK TC"="WenQuanYi Micro Hei"
+"Noto Sans CJK JP"="WenQuanYi Micro Hei"
+"Noto Sans CJK KR"="WenQuanYi Micro Hei"
+"Arial"="WenQuanYi Micro Hei"
+"Arial Black"="WenQuanYi Micro Hei"
+"Calibri"="WenQuanYi Micro Hei"
+"DengXian"="WenQuanYi Micro Hei"
+"DFKai-SB"="WenQuanYi Micro Hei"
+"FangSong"="WenQuanYi Micro Hei"
+"KaiTi"="WenQuanYi Micro Hei"
+"Meiryo"="WenQuanYi Micro Hei"
+"Meiryo UI"="WenQuanYi Micro Hei"
+"Microsoft JhengHei"="WenQuanYi Micro Hei"
+"Microsoft JhengHei UI"="WenQuanYi Micro Hei"
+"Microsoft Sans Serif"="WenQuanYi Micro Hei"
+"Microsoft YaHei"="WenQuanYi Micro Hei"
+"Microsoft YaHei UI"="WenQuanYi Micro Hei"
+"MingLiU"="WenQuanYi Micro Hei"
+"NSimSun"="WenQuanYi Micro Hei"
+"PMingLiU"="WenQuanYi Micro Hei"
+"Segoe UI"="WenQuanYi Micro Hei"
+"SimHei"="WenQuanYi Micro Hei"
+"SimKai"="WenQuanYi Micro Hei"
+"SimSun"="WenQuanYi Micro Hei"
+"System"="WenQuanYi Micro Hei"
+"Tencent Sans"="WenQuanYi Micro Hei"
+"TencentSans"="WenQuanYi Micro Hei"
+"TencentSans W7"="WenQuanYi Micro Hei"
+"Verdana"="WenQuanYi Micro Hei"
+
+; GDI 侧还需要一份带汉字的派生 Tahoma：
+; wine 自带的 tahoma.ttf 没有汉字，而 GDI 的 Replacements 不覆盖已存在的家族。
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\Fonts]
+"Tahoma (TrueType)"="C:\\windows\\Fonts\\tahoma.ttf"
+"Tahoma Bold (TrueType)"="C:\\windows\\Fonts\\tahomabd.ttf"
+
+[HKEY_LOCAL_MACHINE\Software\Wow6432Node\Microsoft\Windows NT\CurrentVersion\Fonts]
+"Tahoma (TrueType)"="C:\\windows\\Fonts\\tahoma.ttf"
+"Tahoma Bold (TrueType)"="C:\\windows\\Fonts\\tahomabd.ttf"

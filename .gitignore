@@ -1,0 +1,10 @@
+src/
+pkg/
+*.exe
+*.ttc
+*.tar.xz
+*.pkg.tar.zst
+*.log
+*.o
+*.so
+workbuddy-protocol.build.rc
