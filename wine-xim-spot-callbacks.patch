@@ -1,0 +1,18 @@
+diff --git a/dlls/winex11.drv/xim.c b/dlls/winex11.drv/xim.c
+--- a/dlls/winex11.drv/xim.c
++++ b/dlls/winex11.drv/xim.c
+@@ -581,8 +581,12 @@ BOOL X11DRV_SetIMECompositionRect( HWND hwnd, RECT rect )
+     XVaNestedList attr;
+     XPoint xpoint;
+ 
+-    if (!(input_style & XIMPreeditPosition))
+-        return FALSE;
++    /* Wine 默认用 XIMPreeditCallbacks（组字串交给应用自己画），这条路径原来
++     * 直接丢掉光标位置，ibus/fcitx 的候选窗只能贴在焦点窗口左下角。输入的
++     * IM 不区分风格，XNSpotLocation 在 callbacks 风格下同样用于摆放候选窗，
++     * 所以两种风格都转发。 */
++    if (!(input_style & (XIMPreeditPosition | XIMPreeditCallbacks)))
++        return FALSE;
+ 
+     if (!(data = get_win_data( hwnd )) || !data->xic)
+     {

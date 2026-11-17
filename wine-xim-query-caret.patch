@@ -1,0 +1,57 @@
+--- a/dlls/winex11.drv/xim.c
++++ b/dlls/winex11.drv/xim.c
+@@ -114,12 +114,46 @@
+     if (!is_ime_hkl( hkl )) NtUserActivateKeyboardLayout( get_ime_hkl( LOWORD(hkl) ), 0 );
+ }
+ 
++/* Chromium 138（Electron 37）不再调用 ImmSetCompositionWindow，光标位置只通过
++ * WM_IME_REQUEST/IMR_QUERYCHARPOSITION 暴露给输入法。Wine 从来不发这个请求，
++ * ibus 拿不到 spot，候选窗就贴在焦点窗口左下角。这里在组字过程中向应用查询光标
++ * 矩形，把返回的屏幕坐标直接喂给 XNSpotLocation。 */
++static void update_ime_spot_from_app( HWND hwnd )
++{
++    IMECHARPOSITION pos;
++    RECT rect;
++
++    /* 跨线程 SendMessage 会等对方线程处理，这里只处理本线程的窗口 */
++    if (NtUserGetWindowThread( hwnd, NULL ) != (DWORD)(ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread) return;
++
++    memset( &pos, 0, sizeof(pos) );
++    pos.dwSize = sizeof(pos);
++    if (!NtUserMessageCall( hwnd, WM_IME_REQUEST, IMR_QUERYCHARPOSITION, (LPARAM)&pos,
++                            NULL, NtUserSendMessage, FALSE ) || !pos.cLineHeight)
++    {
++        TRACE( "hwnd %p: app gave no caret rect\n", hwnd );
++        return;
++    }
++    TRACE( "hwnd %p: app caret rect %d,%d height %u\n", hwnd, (int)pos.pt.x, (int)pos.pt.y,
++           (unsigned int)pos.cLineHeight );
++
++    rect.left = pos.pt.x;
++    rect.top = pos.pt.y;
++    rect.right = rect.left + 1;
++    rect.bottom = rect.top + pos.cLineHeight;
++    X11DRV_SetIMECompositionRect( hwnd, rect );
++}
++
+ static void post_ime_update( HWND hwnd, UINT cursor_pos, WCHAR *comp_str, WCHAR *result_str )
+ {
+     const WCHAR *strings[] = { comp_str, result_str };
++
++    if (comp_str && *comp_str) update_ime_spot_from_app( hwnd );
+     activate_ime_hkl( hwnd );
+     NtUserMessageCall( hwnd, WINE_IME_POST_UPDATE, cursor_pos, (LPARAM)strings,
+                        NULL, NtUserImeDriverCall, FALSE );
++    /* 组字串下发之后再问一次：此时应用侧已经有 composition，可以按字符位置取矩形 */
++    if (comp_str && *comp_str) update_ime_spot_from_app( hwnd );
+ }
+ 
+ static void xim_update_comp_string( UINT offset, UINT old_len, const WCHAR *text, UINT new_len )
+@@ -193,6 +227,7 @@
+     activate_ime_hkl( hwnd );
+     NtUserPostMessage( hwnd, WM_WINE_IME_NOTIFY, IMN_WINE_SET_OPEN_STATUS, TRUE );
+     post_ime_update( hwnd, 0, ime_comp_buf, NULL );
++    update_ime_spot_from_app( hwnd );
+ 
+     return -1;
+ }

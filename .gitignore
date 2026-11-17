@@ -1,5 +1,6 @@
 src/
 pkg/
+.wine-build/
 *.exe
 !explorer-systray-foreground.exe
 *.ttc

@@ -16,6 +16,12 @@ readonly FONTS_REG="${SHARE}/workbuddy-win-fonts.reg"
 readonly EXPLORER_EXE="${SHARE}/explorer-systray-foreground.exe"
 readonly TRAY_DISMISS_EXE="${SHARE}/tray-dismiss.exe"
 readonly TRAY_DISMISS_X11="${SHARE}/tray-dismiss-x11"
+readonly WINE_XIM_SO="${SHARE}/winex11-xim-spot.so"
+readonly WINE_XIM_VERSION="${SHARE}/winex11-xim-spot.wine-version"
+
+# 实际用来跑 wine 的命令。默认就是 wine 本身，setup_wine_xim_spot 判断能用
+# 补丁版 winex11.so 时会换成 bwrap 包一层，见该函数和 PITFALLS.md 第 17 条。
+WINE_LAUNCH=("${WINE_BIN}")
 
 message() {
 	printf '%s\n' "$*" >&2
@@ -99,6 +105,11 @@ setup_wine_env() {
 	export LANGUAGE="${app_locale%%.*}"
 	export LC_ALL="$app_locale"
 	export WINEDEBUG='-all'
+	# Wine 的 imm32 只有在设置了 XMODIFIERS 时才会去连宿主 XIM 服务器；
+	# 不设的话进程里虽然 LANG 正常，输入法窗口根本不出现，只能打英文。
+	# 这里只认 ibus 的 fcitx 类变量没用，XIM 变量是 Win32 输入链路的开关。
+	# 用户自己带值时保留，方便换 fcitx5 的 @im=fcitx。见 PITFALLS.md 第 16 条。
+	export XMODIFIERS="${XMODIFIERS:-@im=ibus}"
 	# WorkBuddy 不碰 .NET。保持这条覆盖：新 prefix 的首个 wineboot 会弹
 	# 「要不要装 wine-mono」的对话框，置空 mscoree/mshtml 直接跳过。
 	# explorer.exe=n 让 wine 用包里打补丁的 explorer，托盘右键菜单才弹得出来，
@@ -112,6 +123,63 @@ setup_wine_env() {
 	if [[ -f ${noshape} ]]; then
 		export LD_PRELOAD="${noshape}${LD_PRELOAD:+:${LD_PRELOAD}}"
 	fi
+
+	setup_wine_xim_spot
+}
+
+# 输入法候选框贴在窗口左下角：wine 默认用 XIMPreeditCallbacks 风格建 XIC，而
+# winex11.drv 的 SetIMECompositionRect 只在 XIMPreeditPosition 风格下才把光标
+# 位置（XNSpotLocation）转发给输入法，callbacks 风格直接丢弃；ibus 拿不到位置就
+# 退回「焦点窗口左下角」。包里这份 winex11.so 除了放宽这处判断，还会在组字时
+# 主动向应用查 IMR_QUERYCHARPOSITION（Chromium 138 只走这条路报位置），其余与
+# 发行版一致，见 PITFALLS.md 第 17 条。
+#
+# wine 的 unix 库按「发行版库目录 → WINEDLLPATH」的顺序找，WINEDLLPATH 覆盖不了
+# 系统目录，所以用 bwrap 起一个只给自己用的挂载命名空间，把这份文件单点挂到系统
+# 库路径上，/usr/lib 下的真文件不动。wine 版本对不上（unix 库 ABI 会变）时退回
+# 原版，输入法本身仍然可用，只是候选框位置不对。
+find_wine_lib_dir() {
+	local dir
+
+	for dir in /usr/lib/wine /usr/lib64/wine /usr/lib/x86_64-linux-gnu/wine \
+		/opt/wine-stable/lib/wine /opt/wine-devel/lib/wine /opt/wine-staging/lib/wine; do
+		if [[ -f "${dir}/x86_64-unix/ntdll.so" ]]; then
+			printf '%s\n' "${dir}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+setup_wine_xim_spot() {
+	local lib_dir target wine_version want_version
+
+	if [[ ! -f ${WINE_XIM_SO} ]]; then
+		return 0
+	fi
+	if ! lib_dir=$(find_wine_lib_dir); then
+		message "找不到 wine 的 unix 库目录，输入法候选框会贴在窗口左下角"
+		return 0
+	fi
+	target="${lib_dir}/x86_64-unix/winex11.so"
+
+	wine_version=$("${WINE_BIN}" --version 2>/dev/null || true)
+	want_version=$(cat "${WINE_XIM_VERSION}" 2>/dev/null || true)
+	if [[ -z ${want_version} || ${wine_version} != "${want_version}" ]]; then
+		message "wine 是 ${wine_version:-未知}、补丁版 winex11.so 是 ${want_version:-未知}，候选框会贴在窗口左下角"
+		return 0
+	fi
+	if ! command -v bwrap >/dev/null; then
+		message "缺少 bubblewrap，输入法候选框会贴在窗口左下角"
+		return 0
+	fi
+	# 用户命名空间被禁时 bwrap 会直接失败，先探一次，别等到启动才炸
+	if ! bwrap --dev-bind / / true >/dev/null 2>&1; then
+		message "bwrap 起不来（用户命名空间受限），输入法候选框会贴在窗口左下角"
+		return 0
+	fi
+
+	WINE_LAUNCH=(bwrap --dev-bind / / --ro-bind "${WINE_XIM_SO}" "${target}" "${WINE_BIN}")
 }
 
 app_installed() {
@@ -133,7 +201,7 @@ apply_fonts() {
 	done
 
 	if ((changed)); then
-		"${WINE_BIN}" regedit /S "${FONTS_REG}"
+		"${WINE_LAUNCH[@]}" regedit /S "${FONTS_REG}"
 		message "中文字体已应用（派生 Tahoma + 替换表 -> 文泉驿微米黑）"
 	fi
 }
@@ -175,7 +243,7 @@ start_tray_dismiss() {
 
 	# helper 不需要托盘 shape 修复，别让它继承 LD_PRELOAD 里的 X11 拦截库
 	env -u LD_PRELOAD setsid "${TRAY_DISMISS_X11}" "$events" >/dev/null 2>&1 &
-	env -u LD_PRELOAD setsid "${WINE_BIN}" "${TRAY_DISMISS_EXE}" \
+	env -u LD_PRELOAD setsid "${WINE_LAUNCH[@]}" "${TRAY_DISMISS_EXE}" \
 		"$win_events" >/dev/null 2>&1 &
 }
 
@@ -189,7 +257,7 @@ ensure_prefix() {
 		message "初始化 wine prefix: ${WINEPREFIX}"
 		mkdir -p "${WINEPREFIX}"
 		WINEDLLOVERRIDES='mscoree,mshtml=;explorer.exe=n' \
-			"${WINE_BIN}" wineboot -u >/dev/null 2>&1 || true
+			"${WINE_LAUNCH[@]}" wineboot -u >/dev/null 2>&1 || true
 	fi
 
 	apply_fonts
@@ -203,7 +271,7 @@ launch() {
 	# 用户显式传了 --no-sandbox 也照样透传，重复无所谓。
 	cd "${APP_DIR}"
 	start_tray_dismiss
-	exec "${WINE_BIN}" WorkBuddy.exe --no-sandbox "$@"
+	exec "${WINE_LAUNCH[@]}" WorkBuddy.exe --no-sandbox "$@"
 }
 
 main() {

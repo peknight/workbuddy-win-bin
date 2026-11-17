@@ -24,7 +24,10 @@ makepkg -si
 - `tray-dismiss.exe` / `tray-dismiss-x11`：托盘菜单点外面时负责关闭，
   见 `PITFALLS.md` 第 15 条；
 - `workbuddy-protocol.exe`：带版本号的 `workbuddy://` 转发器，给企业微信
-  的版本检查用。
+  的版本检查用；
+- `winex11-xim-spot.so`：wine 的 X11 驱动，改了两处（组字时向应用查光标矩形、
+  再把它转成 `XNSpotLocation`），让输入法候选框跟随光标，见 `PITFALLS.md`
+  第 17 条。
 
 另外随包带一份改过 `programs/explorer/systray.c` 的
 `explorer-systray-foreground.exe`：wine 内置 explorer 在转发托盘右键点击时
@@ -32,6 +35,7 @@ makepkg -si
 和重建脚本装在 `/usr/share/workbuddy-win-bin/`，详见 `PITFALLS.md` 第 13 条。
 
 需要 `7zip`、`imagemagick`、`python-fonttools`、`mingw-w64-gcc`。
+运行时用 `bubblewrap` 把 `winex11-xim-spot.so` 单点挂进 wine 的库路径。
 下载的安装包约 460M，装完约 1.3G。
 
 ## 首次运行
@@ -101,6 +105,9 @@ xdg-mime query default x-scheme-handler/workbuddy
 - Electron 在 Wine 下启动崩溃：`--no-sandbox`
 - 企业微信提示“WorkBuddy 版本过低”：带版本资源的协议转发器
 - 企业微信弹 `Failed to open WorkBuddy`：转发器签名者 CN 对齐腾讯白名单
+- 输入框打不了中文：启动器补 `XMODIFIERS`，见 `PITFALLS.md` 第 16 条
+- 输入法候选框贴在窗口左下角：补丁版 `winex11.so` 先向应用查
+  `IMR_QUERYCHARPOSITION`，再转成 `XNSpotLocation`，见 `PITFALLS.md` 第 17 条
 
 细节见 `PITFALLS.md`。
 

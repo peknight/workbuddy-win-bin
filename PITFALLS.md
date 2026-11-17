@@ -245,3 +245,113 @@ WorkBuddy 标题栏 4.6 秒）。
 `Local\WorkBuddyTrayDismiss` mutex。应用正常重启时旧 helper 会继续复用；
 Wine helper 启动后 120 秒没看到 `WorkBuddy.exe`，或看到后消失 30 秒，就自行
 退出；X11 helper 在 Wine 侧心跳过期 5 秒后退出。
+
+## 16. 输入框唤不起输入法，只能打英文
+
+**现象**：WorkBuddy 里所有输入框都只能输入 ASCII，按切换键没反应，ibus 的
+候选窗口根本不出现；宿主其它应用输入法正常。
+
+**原因**：Wine 的 imm32 走 X11 XIM 转发，只有进程环境里有 `XMODIFIERS`
+（如 `@im=ibus`）时才会去连宿主 XIM 服务器。启动器为了对齐界面语言把
+`LANG`/`LC_ALL` 统一改写了，却没有补这个变量，于是 Wine 进程以「没有输入法」
+的状态启动，TSF/IMM 两条路径都拿不到 composition。
+
+**验证方法**：写个只处理 `WM_CHAR` 的 Win32 探针，分别在有无 `XMODIFIERS`
+下用 xdotool 打 `nihao`：
+
+- 不带 `XMODIFIERS`：只收到 ASCII 的 `n i h a o`，没有任何
+  `WM_IME_*` 消息；
+- 带 `XMODIFIERS=@im=ibus`（locale 用 `en_US.UTF-8` 也一样）：收到
+  `WM_IME_STARTCOMPOSITION`、`WM_IME_COMPOSITION`，最终 `WM_CHAR` 是
+  中文字符。
+
+说明限制在 XIM 变量本身，与 locale 是不是 `zh_CN` 无关，也不需要
+`GTK_IM_MODULE` / `QT_IM_MODULE`（那是 GTK/Qt 自己的输入模块，Win32
+程序用不上）。
+
+**解法**：启动器 `setup_wine_env()` 里补
+`export XMODIFIERS="${XMODIFIERS:-@im=ibus}"`。用 `${VAR:-默认值}` 是为了
+让换 fcitx5 的人从外面带 `XMODIFIERS=@im=fcitx` 就能覆盖。
+
+## 17. 输入法候选框贴在窗口左下角，不跟随光标
+
+**现象**：第 16 条修完之后中文能打了，但 ibus 的候选窗总是出现在 WorkBuddy
+窗口左下角（`x` 等于窗口左边，`y` 等于窗口底边），不管光标在输入框哪个位置。
+
+**原因**：两段，缺一段都不行。
+
+一是 wine 建 XIC 时默认选 `XIMPreeditCallbacks | XIMStatusCallbacks`
+风格（组字串交给应用自己画，最接近 Windows 的 IMM 语义）。而
+`dlls/winex11.drv/xim.c` 的 `X11DRV_SetIMECompositionRect()` 只在
+`XIMPreeditPosition` 风格下才把应用给的光标位置转成 `XNSpotLocation` 发给
+输入法，callbacks 风格直接 `return FALSE`。ibus 的 XIM 前端
+（`client/x11/main.c`）收不到 `XNSpotLocation` 时，退回到
+`XTranslateCoordinates(w, root, 0, w.height)`，也就是窗口左下角。
+
+二是这条链路上根本没人给 wine 光标位置。Chromium 138（Electron 37）里
+`ui/base/ime/win/imm32_manager.cc` 已经删了，`RenderWidgetHostViewAura` /
+`HWNDMessageHandler` / `legacy_render_widget_host_win` 里都搜不到
+`WM_IME_COMPOSITION`、`ImmSetCompositionWindow`，也就是说早先「Chromium 每次
+移动光标都会带 `CFS_POINT` 调一次」的判断是错的，实测日志里
+`ImmSetCompositionWindow` 一次都没出现。真正的位置出口只有
+`InputMethodWinBase::OnImeRequest()`：应用收到
+`WM_IME_REQUEST / IMR_QUERYCHARPOSITION` 时，`OnQueryCharPosition()` 才用
+`TextInputClient::GetCaretBounds()` 或
+`GetCompositionCharacterBounds()` 现算一个屏幕矩形回过去。wine 从来不问，
+于是位置一直是空的。
+
+**验证方法**：
+
+1. 先确认 Chromium 走的是哪条输入链：`/proc/<pid>/maps` 里有 `msctf.dll`、
+   日志里有 `msctf:TextStoreACPSink_OnTextChange`，说明 TSF 客户端已起来，
+   但组字串仍由 wine 的 imm32/XIM 送 `WM_IME_COMPOSITION`。
+2. 用 `probe-ime-charpos.c` 往 `Chrome_WidgetWin_1` 顶层窗口直接发
+   `IMR_QUERYCHARPOSITION`：输入框没有焦点时返回 0，说明这个请求只能踩在实际
+   组字上下文里问，单独的探针问不出东西。
+3. 真实输入验证：CDP 读 Slate 输入框的光标矩形是 `(2561,470)` 高 19，日志里
+   对应 `app caret rect 2561,470 height 19`；`xdotool getwindowgeometry` 量
+   `ibus-ui-gtk3` 的候选窗口正好落在 `(2561,470)`。把光标挪到该行行首后，
+   日志变成 `2531,470`，候选窗同步挪到 `(2531,470)`。
+
+顺带确认 `InputStyle=overthespot` 不是解法：它换来 `XIMPreeditPosition`
+风格，但组字串不再回传给应用，而且候选窗位置照样不对。
+
+**解法**：两个补丁各修一半。
+
+`wine-xim-query-caret.patch` 在组字流程里主动问应用要光标矩形：`post_ime_update()`
+在下发组字串前后各查一次，组字开始（`xic_preedit_start`）再查一次，拿到
+`IMECHARPOSITION` 的屏幕坐标后交给 `X11DRV_SetIMECompositionRect()`。只在
+当前线程的窗口上 `SendMessage`，避免跨线程阻塞输入线程。
+
+`wine-xim-spot-callbacks.patch` 把 `X11DRV_SetIMECompositionRect()` 的判断改成
+
+```c
+if (!(input_style & (XIMPreeditPosition | XIMPreeditCallbacks)))
+    return FALSE;
+```
+
+这样两种风格都发 `XNSpotLocation`，组字方式仍是 callbacks。
+
+**打包方式**：wine 的 unix 库只按「发行版库目录 → `WINEDLLPATH`」顺序找
+（`dlls/ntdll/unix/loader.c: load_unixlib_by_name`），`WINEDLLPATH` 覆盖不了
+系统目录，直接往 `/usr/lib/wine/x86_64-unix/` 塞文件又会跟 wine 包的文件
+冲突。所以包里带一份编译好的 `winex11-xim-spot.so`，启动器用
+
+```bash
+bwrap --dev-bind / / --ro-bind "$so" "$wine_lib_dir/x86_64-unix/winex11.so" wine ...
+```
+
+起一个只属于本进程的挂载命名空间，单点把这份文件挂上去，系统文件不动。
+
+**注意**：
+
+- unix 库的 ABI 与 wine 版本绑定，包里带着
+  `winex11-xim-spot.wine-version`，启动器拿它跟 `wine --version` 比对，对不上
+  就退回原版库（输入法仍能用，只是候选框回到左下角），不会把 wine 弄崩。
+- `bwrap` 起不来（用户命名空间被内核或 LSM 限制）时同样退回原版库，
+  启动器会把原因写进 `$XDG_STATE_HOME/workbuddy-win-bin/launch.log`。
+- wine 升版后用 `build-winex11.sh` 按对应版本重编，别拿旧版本的 .so 硬顶。
+- 排查用的 `probe-ime-charpos.c`、`probe-enum-windows.c` 只留在仓库里当诊断
+  工具，不进包：前者往指定窗口发 `IMR_QUERYCHARPOSITION` 看应用回不回矩形，
+  后者枚举进程里的 Win32 窗口和类名。交叉编译：
+  `x86_64-w64-mingw32-gcc -municode -o probe.exe probe-ime-charpos.c -luser32`。
