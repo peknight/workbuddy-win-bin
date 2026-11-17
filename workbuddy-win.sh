@@ -14,6 +14,8 @@ readonly APP_DIR="${SHARE}/app"
 readonly WINE_BIN='/usr/bin/wine'
 readonly FONTS_REG="${SHARE}/workbuddy-win-fonts.reg"
 readonly EXPLORER_EXE="${SHARE}/explorer-systray-foreground.exe"
+readonly TRAY_DISMISS_EXE="${SHARE}/tray-dismiss.exe"
+readonly TRAY_DISMISS_X11="${SHARE}/tray-dismiss-x11"
 
 message() {
 	printf '%s\n' "$*" >&2
@@ -65,6 +67,24 @@ detect_locale() {
 		return 0
 	done
 	printf '%s\n' 'en_US.UTF-8'
+}
+
+# 不要用 systemd-run 的默认输出接法（journal socket）启动：Wine 里 Electron 的
+# main 进程会拿 stdout/stderr 的 fd 再 open 一次，socket 和目录都会在
+# node:net 的 createWritableStdioStream 里抛 EISDIR，弹出「A JavaScript error
+# occurred in the main process」。这类 fd 先换成普通日志文件，见 PITFALLS.md 第 14 条。
+normalize_stdio() {
+	local kind state_dir
+
+	kind=$(stat -Lc %F /proc/self/fd/1 2>/dev/null || true)
+	case "$kind" in
+	socket | fifo | directory) ;;
+	*) return 0 ;;
+	esac
+
+	state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/${PKGNAME}"
+	mkdir -p "$state_dir"
+	exec >>"${state_dir}/launch.log" 2>&1
 }
 
 setup_wine_env() {
@@ -135,6 +155,30 @@ apply_explorer() {
 	fi
 }
 
+# 托盘右键菜单弹出后，Electron 会把前台还给托盘宿主，菜单窗口失活；Wine 的
+# mouse capture 又只覆盖同一个进程，点别的窗口时 Chromium 收不到取消事件。
+# 这里拉起一对 helper：X11 侧记录根窗口上的按下位置，Wine 侧发现点击落在
+# Chromium 菜单外就发 Esc 取消。两者都用单实例锁，应用重启时继续复用。
+start_tray_dismiss() {
+	local runtime events win_events
+
+	if [[ ! -x ${TRAY_DISMISS_X11} || ! -f ${TRAY_DISMISS_EXE} ]]; then
+		message "缺少托盘菜单辅助程序，菜单可能点在别处也不会消失"
+		return 0
+	fi
+
+	runtime="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/${PKGNAME}"
+	mkdir -p -m 700 "$runtime" 2>/dev/null || true
+	events="${runtime}/tray-events.bin"
+	# Wine 把 Z: 映射到宿主根目录，路径分隔符要换成反斜杠
+	win_events="Z:${events//\//\\}"
+
+	# helper 不需要托盘 shape 修复，别让它继承 LD_PRELOAD 里的 X11 拦截库
+	env -u LD_PRELOAD setsid "${TRAY_DISMISS_X11}" "$events" >/dev/null 2>&1 &
+	env -u LD_PRELOAD setsid "${WINE_BIN}" "${TRAY_DISMISS_EXE}" \
+		"$win_events" >/dev/null 2>&1 &
+}
+
 ensure_prefix() {
 	app_installed || {
 		message "程序文件缺失：${APP_DIR}/WorkBuddy.exe，重装 ${PKGNAME} 后再试"
@@ -158,6 +202,7 @@ launch() {
 	# 的普通文件，非 root 启动只能关掉沙箱（应用本身仍有 Win32 作业对象隔离）。
 	# 用户显式传了 --no-sandbox 也照样透传，重复无所谓。
 	cd "${APP_DIR}"
+	start_tray_dismiss
 	exec "${WINE_BIN}" WorkBuddy.exe --no-sandbox "$@"
 }
 
@@ -169,6 +214,7 @@ main() {
 		;;
 	esac
 
+	normalize_stdio
 	setup_wine_env "$(resolve_prefix)"
 
 	case "${1:-}" in

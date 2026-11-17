@@ -2,7 +2,7 @@
 
 pkgname=workbuddy-win-bin
 pkgver=5.11.3.43806934
-pkgrel=7
+pkgrel=13
 pkgdesc='腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine'
 arch=('x86_64')
 url='https://copilot.tencent.com/'
@@ -15,6 +15,7 @@ depends=(
     'hicolor-icon-theme'
     'libx11'        # 托盘图标修复用的 LD_PRELOAD 小库
     'libxext'
+    'libxi'         # 托盘菜单辅助进程用 XInput2 raw 事件记录点击/Esc
     'wqy-microhei' # 中文字形来源，替换表把它填给 Tahoma / Noto Sans CJK 等家族
 )
 makedepends=(
@@ -43,6 +44,8 @@ source=(
     'workbuddy-win.desktop'
     'workbuddy-win-fonts.reg'
     'no-shaped-systray.c'
+    'tray-dismiss.c'
+    'tray-dismiss-x11.c'
     'explorer-systray-foreground.exe'
     'explorer-systray-foreground.patch'
     'build-explorer.sh'
@@ -54,6 +57,8 @@ source=(
 noextract=("${_exe}")
 sha256sums=(
     '2fd40059eea2f9a2d641c675a66f2476d71b49d9eb32f19db8c318768133b56b'
+    'SKIP'
+    'SKIP'
     'SKIP'
     'SKIP'
     'SKIP'
@@ -107,6 +112,12 @@ build() {
     # 托盘窗口的 bounding shape，详见 no-shaped-systray.c 开头
     cc -shared -fPIC -O2 -Wall -Wextra \
         -o no-shaped-systray.so no-shaped-systray.c -ldl -lX11 -lXext
+
+    # 托盘菜单“点外面不消失”的辅助进程，说明见 PITFALLS.md 第 15 条。
+    # Wine 侧枚举 Chromium 菜单窗口，X11 侧负责记录跨客户端的鼠标按下。
+    x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows \
+        -o tray-dismiss.exe tray-dismiss.c -luser32
+    cc -O2 -Wall -Wextra -o tray-dismiss-x11 tray-dismiss-x11.c -lXi -lX11
 
     # 企业微信会读 workbuddy:// 注册表指向的 exe 的 FileVersion 做版本门槛。
     # winebrowser 没有版本资源，所以编一个和 WorkBuddy.exe 同版本号的转发器，
@@ -194,6 +205,10 @@ package() {
     install -Dm644 "$srcdir/workbuddy-win-fonts.reg" "$share/workbuddy-win-fonts.reg"
     install -Dm755 "$srcdir/no-shaped-systray.so" \
         "$pkgdir/usr/lib/$pkgname/no-shaped-systray.so"
+    install -Dm755 "$srcdir/tray-dismiss.exe" \
+        "$pkgdir/usr/lib/$pkgname/tray-dismiss.exe"
+    install -Dm755 "$srcdir/tray-dismiss-x11" \
+        "$pkgdir/usr/lib/$pkgname/tray-dismiss-x11"
     # 托盘右键菜单用，见 PITFALLS.md 第 13 条；补丁和重建脚本一起装，
     # wine 升版后可以照着重出一份
     install -Dm755 "$srcdir/explorer-systray-foreground.exe" \

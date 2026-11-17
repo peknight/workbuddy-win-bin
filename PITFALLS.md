@@ -175,3 +175,73 @@ wineserver 的 `set_foreground_window()`（`server/queue.c`）会拿调用方 in
 菜单里的汉字是方框的话是另一回事：Chromium 启动时会缓存字体，字体替换表
 必须在应用启动之前就位。`workbuddy-win fontfix` 之后要重启应用（或
 `wineserver -k`）才看得到效果。
+
+## 14. stdout/stderr 不能是 socket 或目录
+
+用 `systemd-run --user ... /usr/bin/workbuddy-win` 这种脱离终端的方式启动时，
+systemd 默认把输出接到 journal 的 unix socket 上。Wine 里 Electron 的 main
+进程会给 stdout/stderr 各建一个可写流，而这一步在 Wine 下会按 fd 再 open
+一次；fd 是 socket（或目录）时 `node:net` 直接抛：
+
+```text
+Uncaught Exception: Error: open EISDIR
+  at new Socket (node:net:437:13)
+  at createWritableStdioStream ...
+```
+
+启动器界面起来后弹一个「A JavaScript error occurred in the main process」
+对话框，但应用本身还在跑，日志里也看不出别的问题。跟 explorer 托盘补丁无关。
+
+启动器现在会先看 `/proc/self/fd/1` 的类型，是 socket、FIFO 或 directory
+就追加到
+`$XDG_STATE_HOME/<pkg>/launch.log`（默认 `~/.local/state`）。绕开的方法有三个，
+任选一个：显式给 systemd 一个文件
+（`--property=StandardOutput=append:/tmp/wb.log`）、接伪终端
+（`systemd-run --user --pty`）、或者不脱终端直接跑。
+
+## 15. 托盘右键菜单点外面不消失
+
+**现象**：右键菜单能正常弹出，菜单项也能点，但点桌面、点别的窗口、点
+WorkBuddy 主窗口都不会关闭菜单；`Esc` 同样无效，只能选中某一项或再右键一次。
+
+**原因**：Electron 的托盘菜单是 Chromium 自绘的 popup。菜单弹出后应用把前台
+还给托盘宿主窗口，菜单本身失活，Chromium 开始等鼠标 capture 带来的取消事件。
+Wine 的 mouse capture 只在同一个进程的输入队列里生效，win32u 并不会为它做
+`XGrabPointer`；点其他 X 客户端时，事件根本不会进入 WorkBuddy 的队列。放在
+Wine 里轮询 `GetAsyncKeyState` 或装 `WH_MOUSE_LL` 也没用，它们同样只覆盖本
+进程。所以应用完全不知道菜单外面发生了点击。
+
+**解法**：启动器在 `exec WorkBuddy.exe` 之前拉起一对同包 helper：
+
+- `tray-dismiss-x11`：在根窗口上收 XInput2 的 `XI_RawButtonPress` /
+  `XI_RawKeyPress`。raw 事件不抢输入、不需要 grab，按下沿由 X server 直接
+  送出，跨客户端的点击也能看到；坐标在收到事件时用 `XQueryPointer` 现取。
+  没有 XInput2 时退回 `XQueryPointer` / `XQueryKeymap` 轮询，极短的点击
+  可能漏掉。事件写进 `$XDG_RUNTIME_DIR/workbuddy-win-bin/tray-events.bin`；
+- `tray-dismiss.exe`：跑在同一个 prefix 里，枚举可见、无标题、带
+  `WS_POPUP` 的 `Chrome_WidgetWin_*` 菜单窗口。事件坐标落在所有菜单矩形
+  之外，或事件是 `Esc` 时，向这些窗口 `PostMessage` 一个
+  `WM_KEYDOWN`/`VK_ESCAPE`；点在菜单内不发，避免抢掉菜单自己的点击。
+
+弹出菜单的那一下右键也会被 X11 侧记录，所以 Wine helper 第一次看到菜单时
+只把当前序号记为基线，不处理这次事件。
+
+这里不能用 `WM_CANCELMODE`：它只会把原生窗口藏起来，Chromium 的
+`views::MenuController` 仍然以为菜单在运行，托盘下一次
+`popUpContextMenu()` 会被直接忽略，表现成“点外面关掉后，马上再右键没反应”。
+`VK_ESCAPE` 的按键消息才会走菜单自己的取消路径，窗口真正销毁，下一次右键
+立刻恢复。
+
+也不要再补发鼠标点击：外部那一下点击已经由 X server 送到目标窗口了，补发
+等于把同一下点两遍；更麻烦的是 Xfce 面板这种区域不在 wine 桌面范围内，补发
+的点击没有落点，菜单反而要等好几秒才被别的路径收掉（实测面板 1.4 秒、
+WorkBuddy 标题栏 4.6 秒）。
+
+同理不能用 `SendInput` 补 Esc：点了别的 X 客户端之后 wine 已经失去焦点，
+合成的按键没有接收窗口。`PostMessage` 直接送到菜单窗口句柄，不依赖焦点，
+实测面板 212ms、标题栏 44~78ms、其他窗口 47~82ms 关闭，且都能立刻重开。
+
+两个 helper 都用单实例锁：X11 侧是事件文件旁的 `flock`，Wine 侧是
+`Local\WorkBuddyTrayDismiss` mutex。应用正常重启时旧 helper 会继续复用；
+Wine helper 启动后 120 秒没看到 `WorkBuddy.exe`，或看到后消失 30 秒，就自行
+退出；X11 helper 在 Wine 侧心跳过期 5 秒后退出。

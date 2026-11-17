@@ -1,6 +1,6 @@
 --- a/programs/explorer/systray.c
 +++ b/programs/explorer/systray.c
-@@ -552,6 +552,14 @@ static LRESULT WINAPI tray_icon_wndproc( HWND hwnd, UINT msg, WPARAM wparam, LPA
+@@ -552,6 +552,16 @@ static LRESULT WINAPI tray_icon_wndproc( HWND hwnd, UINT msg, WPARAM wparam, LPA
      {
          MSG message = {.hwnd = hwnd, .message = msg, .wParam = wparam, .lParam = lparam};
          SendMessageW( icon->tooltip, TTM_RELAYEVENT, 0, (LPARAM)&message );
@@ -8,8 +8,11 @@
 +         * SetForegroundWindow() - which shell apps such as Electron call before
 +         * popping their tray context menu - is refused with STATUS_ACCESS_DENIED
 +         * because the owner's input time is older than ours. Foreground the
-+         * owner from here, where the input time check still passes. */
-+        if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
++         * owner from here, where the input time check still passes.
++         * Only on button down: by button up the menu window already owns the
++         * foreground, and taking it back would leave the open menu unfocused,
++         * so neither Esc nor a click elsewhere would dismiss it. */
++        if (msg == WM_RBUTTONDOWN)
 +            SetForegroundWindow( icon->owner );
          if (!notify_owner( icon, msg, lparam )) break;
          if (icon->version > 0)

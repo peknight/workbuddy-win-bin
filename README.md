@@ -18,9 +18,11 @@ makepkg -si
 ```
 
 构建期把官方 NSIS 安装包拆开，取出 `$PLUGINSDIR/app-64.7z`；再从官方素材
-生成 16~256 的图标、派生带汉字的 Tahoma、编译两个小工具：
+生成 16~256 的图标、派生带汉字的 Tahoma、编译几个小工具：
 
 - `no-shaped-systray.so`：修托盘图标黑底；
+- `tray-dismiss.exe` / `tray-dismiss-x11`：托盘菜单点外面时负责关闭，
+  见 `PITFALLS.md` 第 15 条；
 - `workbuddy-protocol.exe`：带版本号的 `workbuddy://` 转发器，给企业微信
   的版本检查用。
 
@@ -39,7 +41,7 @@ makepkg -si
 1. 在 `$XDG_DATA_HOME/wineprefixes/workbuddy-win` 建 prefix；
 2. 往 prefix 里装派生 Tahoma、应用字体替换表，替换 prefix 里的
    `explorer.exe`（修托盘右键菜单）；
-3. 启动 `WorkBuddy.exe --no-sandbox`。
+3. 拉起托盘菜单辅助进程，再启动 `WorkBuddy.exe --no-sandbox`。
 
 登录态和聊天数据都在 prefix 里，`pacman -Syu` 升级包不动 prefix，不用重新
 登录。
@@ -94,6 +96,7 @@ xdg-mime query default x-scheme-handler/workbuddy
 ## 已经处理掉的坑
 
 - 托盘图标黑底加边框：`LD_PRELOAD` 摘掉 wine 给托盘窗口设的 bounding shape
+- 托盘右键菜单点外面不消失：X11 侧记录点击，Wine 侧给菜单发 Esc 取消
 - GDI 控件汉字方框：派生一份带汉字的 Tahoma
 - Electron 在 Wine 下启动崩溃：`--no-sandbox`
 - 企业微信提示“WorkBuddy 版本过低”：带版本资源的协议转发器
