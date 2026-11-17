@@ -1,6 +1,7 @@
 src/
 pkg/
 *.exe
+!explorer-systray-foreground.exe
 *.ttc
 *.tar.xz
 *.pkg.tar.zst

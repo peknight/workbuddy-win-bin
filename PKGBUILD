@@ -2,7 +2,7 @@
 
 pkgname=workbuddy-win-bin
 pkgver=5.11.3.43806934
-pkgrel=6
+pkgrel=7
 pkgdesc='腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine'
 arch=('x86_64')
 url='https://copilot.tencent.com/'
@@ -23,7 +23,7 @@ makedepends=(
     'python-fonttools' # 派生带汉字的 Tahoma，给 GDI 那一路取字用
     'mingw-w64-gcc'    # 编 workbuddy:// 转发器
     'openssl'          # 给转发器出一次性自签名证书
-    'jre-openjdk-headless' # jsign 签转发器，企业微信要校验 Authenticode
+    'java-runtime-headless' # jsign 签转发器，企业微信要校验 Authenticode
 )
 
 # 国内版（copilot.tencent.com / workbuddy.cn）主程序是 WorkBuddy.exe，数据目录
@@ -43,6 +43,9 @@ source=(
     'workbuddy-win.desktop'
     'workbuddy-win-fonts.reg'
     'no-shaped-systray.c'
+    'explorer-systray-foreground.exe'
+    'explorer-systray-foreground.patch'
+    'build-explorer.sh'
     'workbuddy-protocol.c'
     'workbuddy-protocol.rc'
     'jsign-7.6.jar::https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar'
@@ -51,6 +54,9 @@ source=(
 noextract=("${_exe}")
 sha256sums=(
     '2fd40059eea2f9a2d641c675a66f2476d71b49d9eb32f19db8c318768133b56b'
+    'SKIP'
+    'SKIP'
+    'SKIP'
     'SKIP'
     'SKIP'
     'SKIP'
@@ -188,6 +194,14 @@ package() {
     install -Dm644 "$srcdir/workbuddy-win-fonts.reg" "$share/workbuddy-win-fonts.reg"
     install -Dm755 "$srcdir/no-shaped-systray.so" \
         "$pkgdir/usr/lib/$pkgname/no-shaped-systray.so"
+    # 托盘右键菜单用，见 PITFALLS.md 第 13 条；补丁和重建脚本一起装，
+    # wine 升版后可以照着重出一份
+    install -Dm755 "$srcdir/explorer-systray-foreground.exe" \
+        "$pkgdir/usr/lib/$pkgname/explorer-systray-foreground.exe"
+    install -Dm644 "$srcdir/explorer-systray-foreground.patch" \
+        "$pkgdir/usr/share/$pkgname/explorer-systray-foreground.patch"
+    install -Dm755 "$srcdir/build-explorer.sh" \
+        "$pkgdir/usr/share/$pkgname/build-explorer.sh"
     install -Dm644 "$srcdir/workbuddy-protocol.exe" \
         "$pkgdir/usr/lib/$pkgname/workbuddy-protocol.exe"
 

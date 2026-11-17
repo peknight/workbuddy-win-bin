@@ -13,6 +13,7 @@ readonly SHARE="/usr/lib/${PKGNAME}"
 readonly APP_DIR="${SHARE}/app"
 readonly WINE_BIN='/usr/bin/wine'
 readonly FONTS_REG="${SHARE}/workbuddy-win-fonts.reg"
+readonly EXPLORER_EXE="${SHARE}/explorer-systray-foreground.exe"
 
 message() {
 	printf '%s\n' "$*" >&2
@@ -80,7 +81,9 @@ setup_wine_env() {
 	export WINEDEBUG='-all'
 	# WorkBuddy 不碰 .NET。保持这条覆盖：新 prefix 的首个 wineboot 会弹
 	# 「要不要装 wine-mono」的对话框，置空 mscoree/mshtml 直接跳过。
-	export WINEDLLOVERRIDES='mscoree,mshtml='
+	# explorer.exe=n 让 wine 用包里打补丁的 explorer，托盘右键菜单才弹得出来，
+	# 见 apply_explorer 和 PITFALLS.md 第 13 条。
+	export WINEDLLOVERRIDES='mscoree,mshtml=;explorer.exe=n'
 
 	# 托盘图标黑底：wine 会给托盘窗口设 bounding shape，Xfce panel 把它圈住的
 	# 区域整块填黑。这个小库在 wine 进程里拦掉那次 shape 设置（只在有合成器时），
@@ -115,6 +118,23 @@ apply_fonts() {
 	fi
 }
 
+# 托盘右键菜单弹不出来：wine 内置 explorer 把点击转发给应用时，这段输入落在
+# explorer 自己的队列里，时间戳比应用的新；应用（Electron）随后调用的
+# SetForegroundWindow 会被 wineserver 按 input 时间判为越权，直接放弃弹菜单。
+# 包里这份 explorer.exe 在转发前先替应用抢一次前台，见 PITFALLS.md 第 13 条。
+apply_explorer() {
+	local win_explorer="${WINEPREFIX}/drive_c/windows/system32/explorer.exe"
+
+	if [[ ! -f ${EXPLORER_EXE} ]]; then
+		message "缺少 ${EXPLORER_EXE}，托盘右键菜单可能弹不出来"
+		return 0
+	fi
+	if ! cmp -s "${EXPLORER_EXE}" "${win_explorer}"; then
+		install -Dm755 "${EXPLORER_EXE}" "${win_explorer}"
+		message "托盘菜单修复已应用（替换 prefix 里的 explorer.exe）"
+	fi
+}
+
 ensure_prefix() {
 	app_installed || {
 		message "程序文件缺失：${APP_DIR}/WorkBuddy.exe，重装 ${PKGNAME} 后再试"
@@ -124,10 +144,13 @@ ensure_prefix() {
 	if [[ ! -d "${WINEPREFIX}/drive_c" ]]; then
 		message "初始化 wine prefix: ${WINEPREFIX}"
 		mkdir -p "${WINEPREFIX}"
-		WINEDLLOVERRIDES='mscoree,mshtml=' "${WINE_BIN}" wineboot -u >/dev/null 2>&1 || true
+		WINEDLLOVERRIDES='mscoree,mshtml=;explorer.exe=n' \
+			"${WINE_BIN}" wineboot -u >/dev/null 2>&1 || true
 	fi
 
 	apply_fonts
+	# wineboot / wine 升级可能把 explorer.exe 换回内置版，每次启动都对一遍
+	apply_explorer
 }
 
 launch() {

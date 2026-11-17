@@ -24,6 +24,11 @@ makepkg -si
 - `workbuddy-protocol.exe`：带版本号的 `workbuddy://` 转发器，给企业微信
   的版本检查用。
 
+另外随包带一份改过 `programs/explorer/systray.c` 的
+`explorer-systray-foreground.exe`：wine 内置 explorer 在转发托盘右键点击时
+不抢前台，Electron 的托盘菜单会被 wineserver 的时间检查挡掉、弹不出来。补丁
+和重建脚本装在 `/usr/share/workbuddy-win-bin/`，详见 `PITFALLS.md` 第 13 条。
+
 需要 `7zip`、`imagemagick`、`python-fonttools`、`mingw-w64-gcc`。
 下载的安装包约 460M，装完约 1.3G。
 
@@ -32,7 +37,8 @@ makepkg -si
 直接启动 `workbuddy-win`（或应用菜单里的 WorkBuddy）。首次会：
 
 1. 在 `$XDG_DATA_HOME/wineprefixes/workbuddy-win` 建 prefix；
-2. 往 prefix 里装派生 Tahoma 并应用字体替换表；
+2. 往 prefix 里装派生 Tahoma、应用字体替换表，替换 prefix 里的
+   `explorer.exe`（修托盘右键菜单）；
 3. 启动 `WorkBuddy.exe --no-sandbox`。
 
 登录态和聊天数据都在 prefix 里，`pacman -Syu` 升级包不动 prefix，不用重新
