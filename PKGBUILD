@@ -2,7 +2,7 @@
 
 pkgname=workbuddy-win-bin
 pkgver=5.11.3.43806934
-pkgrel=20
+pkgrel=22
 pkgdesc='腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine'
 arch=('x86_64')
 url='https://copilot.tencent.com/'
@@ -96,6 +96,8 @@ build() {
     # Wine 没有可用的 WinRT toast：任务完成通知会执行
     # `new electron.Notification(...).show()`，主进程当场消失。
     # 补丁把这几处换成空实现，并关掉 asar 完整性 fuse。见 PITFALLS.md 第 20 条。
+    # 同一个脚本还修两处 Bash 工具的问题：vendor 提取不再覆盖启动器设好的
+    # Git Bash 代理路径，CLI 入口启动时清掉继承来的 LD_PRELOAD。见第 21 条。
     python patch-workbuddy-asar.py app
 
     # Electron 的界面走 DirectWrite，自己带回退链；GDI 那一路（部分原生控件）

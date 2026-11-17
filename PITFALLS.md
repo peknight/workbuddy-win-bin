@@ -475,3 +475,46 @@ Electron 的 `isSupported()` 在 Windows 上只判断系统版本，Wine 里返�
   asar 哈希。脚本同时把这一个 fuse 从 `1` 翻成 `0`（fuse wire 里第 5 位，
   前面 4 位是 RunAsNode / CookieEncryption / NodeOptionsEnv /
   NodeCliInspect）。
+
+## 21. PortableGit 提取覆盖 Git Bash 代理，CLI 又继承了 `LD_PRELOAD`
+
+**现象**：第 19 条的代理已经通了，Bash 工具却换了种坏法：每条命令都失败，
+报错是
+
+```
+Cygwin ... bash.exe 加载 Z:\usr\lib\workbuddy-win-bin\no-shaped-systray.so 失败
+```
+
+而且每次新建 shell 的 PID 都不同、错在同一处。我一开始按“偶发环境问题”
+处理，实测两次报错后三次正常，其实是没看清触发条件，不是随机。
+
+**原因**：两个独立的坑叠在一起。
+
+1. `app.asar` 里的 `main/shell-env-async.js` 在 PortableGit 解压完成后，
+   无条件把 `process.env.CODEBUDDY_CODE_GIT_BASH_PATH` 改写成自带的
+   `bin/bash.exe`，启动器设好的 `wb-bash-proxy.exe` 在运行时被覆盖，Bash
+   工具又退回 Cygwin 那套跑不起来的东西。
+2. 托盘图标修复给主进程挂了 `LD_PRELOAD=no-shaped-systray.so`，主进程必须
+   留着它；但 Wine 里所有子进程都会继承。Cygwin/MSYS2 把 `LD_PRELOAD` 当成
+   自己的预加载列表，按 MSYS 的虚拟根去打开 `/usr/lib/...so`，于是每个
+   shell 都死在加载一个宿主 .so 上。
+
+**解法**：都在 `patch-workbuddy-asar.py` 里，构建期一次改完。
+
+- `shell-env-async.js` 改成“环境变量里已有可用路径就保留”，不够长的地方用
+  块注释补齐，偏移不变。
+- CLI 入口 `cli/dist/codebuddy-lite-wb.mjs`、`cli/bin/codebuddy`、
+  `cli/bin/cbc-prewarm`、`cli/bin/codebuddy-lowmem` 顶部插一行
+  `delete process.env.LD_PRELOAD;`。只清 CLI 进程及其子进程，主进程的 X11
+  拦截库照常生效。
+
+**踩过的细节**：
+
+- 有 shebang 的入口必须插在 shebang 行**之后**，否则脚本不再可执行；判断
+  时还要认 `\r\n`。
+- 改写后的 JS 要过一遍 `node --check`。有一次 `SHELL_ENV_NEW` 少写了一个右
+  花括号，主进程直接卡住没窗口，日志里也没有明显线索；加上语法检查后在
+  makepkg 阶段就报出来了。
+- 等长替换仍是硬约束：错一个字节，后面所有文件的 offset 全乱。
+- 这条和超时、bridge、`bash -lc` 无关，宿主侧进程根本没被调到。先看报错里
+  加载的是哪个库，就能立刻区分是这条还是第 19 条。
