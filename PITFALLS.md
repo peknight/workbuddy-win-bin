@@ -332,6 +332,11 @@ if (!(input_style & (XIMPreeditPosition | XIMPreeditCallbacks)))
 
 这样两种风格都发 `XNSpotLocation`，组字方式仍是 callbacks。
 
+**spot 的纵向偏移**：ibus 的 XIM 前端把 `XNSpotLocation` 直接当作候选窗位置，
+callbacks 模式下它拿不到预编辑高度。若 spot 取光标行的上沿
+（`pos.pt.y`），候选窗会正好压住正在输入的那一行；改成行底
+（`pos.pt.y + pos.cLineHeight`）后，候选窗落在下一行，和 GTK 应用观感一致。
+
 **打包方式**：wine 的 unix 库只按「发行版库目录 → `WINEDLLPATH`」顺序找
 （`dlls/ntdll/unix/loader.c: load_unixlib_by_name`），`WINEDLLPATH` 覆盖不了
 系统目录，直接往 `/usr/lib/wine/x86_64-unix/` 塞文件又会跟 wine 包的文件

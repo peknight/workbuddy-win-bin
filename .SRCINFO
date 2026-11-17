@@ -1,7 +1,7 @@
 pkgbase = workbuddy-win-bin
 	pkgdesc = 腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine
 	pkgver = 5.11.3.43806934
-	pkgrel = 16
+	pkgrel = 17
 	url = https://copilot.tencent.com/
 	arch = x86_64
 	license = LicenseRef-proprietary

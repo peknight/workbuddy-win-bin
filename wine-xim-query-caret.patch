@@ -1,6 +1,6 @@
 --- a/dlls/winex11.drv/xim.c
 +++ b/dlls/winex11.drv/xim.c
-@@ -114,12 +114,46 @@
+@@ -114,12 +114,49 @@
      if (!is_ime_hkl( hkl )) NtUserActivateKeyboardLayout( get_ime_hkl( LOWORD(hkl) ), 0 );
  }
  
@@ -27,10 +27,13 @@
 +    TRACE( "hwnd %p: app caret rect %d,%d height %u\n", hwnd, (int)pos.pt.x, (int)pos.pt.y,
 +           (unsigned int)pos.cLineHeight );
 +
++    /* ibus 的 XIM 前端把 XNSpotLocation 直接当成候选窗位置：callbacks 模式下它
++     * 不知道预编辑画了多高，spot 落在光标行上沿时候选窗就压住正在输入的那一行。
++     * 这里带上行高，spot 落到行底，候选窗出现在下一行，和 GTK 应用一致。 */
 +    rect.left = pos.pt.x;
-+    rect.top = pos.pt.y;
++    rect.top = pos.pt.y + pos.cLineHeight;
 +    rect.right = rect.left + 1;
-+    rect.bottom = rect.top + pos.cLineHeight;
++    rect.bottom = rect.top + 1;
 +    X11DRV_SetIMECompositionRect( hwnd, rect );
 +}
 +
@@ -47,7 +50,7 @@
  }
  
  static void xim_update_comp_string( UINT offset, UINT old_len, const WCHAR *text, UINT new_len )
-@@ -193,6 +227,7 @@
+@@ -193,6 +230,7 @@
      activate_ime_hkl( hwnd );
      NtUserPostMessage( hwnd, WM_WINE_IME_NOTIFY, IMN_WINE_SET_OPEN_STATUS, TRUE );
      post_ime_update( hwnd, 0, ime_comp_buf, NULL );
