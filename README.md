@@ -24,7 +24,10 @@ makepkg -si
 - `tray-dismiss.exe` / `tray-dismiss-x11`：托盘菜单点外面时负责关闭，
   见 `PITFALLS.md` 第 15 条；
 - `workbuddy-protocol.exe`：带版本号的 `workbuddy://` 转发器，给企业微信
-  的版本检查用。
+  的版本检查用；
+- `wb-bash-proxy.exe` / `wb-bash-bridge.py`：Bash 工具的 Linux 工具链桥。
+- `patch-workbuddy-asar.py`：把 Windows 原生 toast 换成空实现，否则任务
+  完成时进程会直接消失，见 `PITFALLS.md` 第 20 条。
 
 需要 `7zip`、`imagemagick`、`python-fonttools`、`mingw-w64-gcc`。运行时依赖
 [`wine-fix`](https://github.com/peknight/wine-fix)：输入法候选框跟随光标、
@@ -52,6 +55,7 @@ makepkg -si
 | `workbuddy-win setup` | 只补建 prefix / 应用字体 |
 | `workbuddy-win fontfix` | 重打字体替换表（界面出现方框时用） |
 | `workbuddy-win prefix` | 打印当前 `WINEPREFIX` |
+| `workbuddy-win bridge` | 启动 Linux 工具链桥并打印端口 |
 | `workbuddy-win help` | 帮助 |
 
 其余参数原样传给 `WorkBuddy.exe`。
@@ -59,6 +63,45 @@ makepkg -si
 | 环境变量 | 说明 |
 |---|---|
 | `WORKBUDDY_WIN_PREFIX` | 指定 prefix 路径，覆盖默认位置 |
+| `WORKBUDDY_NO_LINUX_BASH` | 设为 `1` 时关闭 Bash 工具的 Linux 工具链桥 |
+| `WORKBUDDY_BASH_PROFILE` | 每条命令前额外 `source` 的 shell 文件，如 `~/.profile_lowrisk` |
+
+## Bash 工具用宿主 Linux 工具链
+
+WorkBuddy 自带的 PortableGit 在 Wine 下只能跑 shell 内建命令，`git`、`python3`、
+`make`、`Rscript` 这类外部程序一个都起不来。启动器默认会拉起一个小守护进程，
+把 Bash 工具的脚本转给宿主 `/bin/bash -lc` 执行，stdout/stderr 和退出码原样
+回传：
+
+```
+WorkBuddy (Wine)                          Linux 宿主
+wb-bash-proxy.exe ── 127.0.0.1:随机端口 ──▶ wb-bash-bridge.py
+       ▲                                      │ /bin/bash -lc
+       └──────── stdout / stderr / rc ────────┘
+```
+
+这条链路是同步的，Bash 工具看到的仍是一条命令执行完再返回；不需要轮询文件，
+也不用往 MEMORY 里写“改用文件队列”的规则。守护进程只监听 loopback，每次启动
+生成随机 token，状态文件在 `$XDG_RUNTIME_DIR/workbuddy-win-bin/bash-bridge.state`
+（权限 0600），空闲 30 分钟自动退出。命令以当前用户身份、不加沙箱地执行，权限
+边界等同于你自己的终端。
+
+脚本里的 `Z:\home\pek\...`、`C:\users\pek\...`、`/z/home/pek/...` 会分别转换成
+Linux 路径，带引号的路径（含空格）也能处理。命令以宿主用户身份运行，登录 shell
+会加载 `~/.profile`；Maven、Java 这类只写在 `~/.profile_lowrisk` 里的环境不会
+自动带上，需要时把 `WORKBUDDY_BASH_PROFILE` 指过去：
+
+```bash
+WORKBUDDY_BASH_PROFILE=~/.profile_lowrisk workbuddy-win
+```
+
+几个边界：
+
+- 这是 Bash 工具专用的路径，不会把 Wine 里所有 `git.exe` 调用都换掉；
+- 命令里不能再调用 Windows 的 `.exe`（`cmd.exe`、`where.exe` 等），要用宿主
+  对应的 Linux 命令；
+- 交互式命令（等 stdin 的 `read`、不带 `-m` 的 `git commit`）会直接拿到 EOF；
+- 需要临时回到自带 Git Bash 时，设 `WORKBUDDY_NO_LINUX_BASH=1` 再启动。
 
 ## 和企业微信的联动
 
@@ -104,6 +147,8 @@ xdg-mime query default x-scheme-handler/workbuddy
   `IMR_QUERYCHARPOSITION`，再转成 `XNSpotLocation`，见 `PITFALLS.md` 第 17 条
 - 窗口左下角重复画一份正在输入的字：补丁版 `imm32.dll` 不再显示回退的 IME
   UI 窗，见 `PITFALLS.md` 第 18 条
+- Bash 工具只能跑 shell 内建：启动器拉起宿主侧 bridge，PE 代理转发脚本和输出，
+  见 `PITFALLS.md` 第 19 条
 
 细节见 `PITFALLS.md`。
 

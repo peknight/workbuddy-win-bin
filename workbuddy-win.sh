@@ -17,6 +17,8 @@ readonly WINE_BIN='/usr/bin/wine-fix-run'
 readonly FONTS_REG="${SHARE}/workbuddy-win-fonts.reg"
 readonly TRAY_DISMISS_EXE="${SHARE}/tray-dismiss.exe"
 readonly TRAY_DISMISS_X11="${SHARE}/tray-dismiss-x11"
+readonly BASH_BRIDGE="${SHARE}/wb-bash-bridge.py"
+readonly BASH_PROXY="${SHARE}/wb-bash-proxy.exe"
 
 # 实际用来跑 wine 的命令。wine-fix-run 版本对不上时会自己退回原版 wine。
 WINE_LAUNCH=("${WINE_BIN}")
@@ -37,10 +39,12 @@ usage() {
   setup      建 prefix、补字体（prefix 已存在时只补缺失部分）
   fontfix    重新应用中文字体替换（界面出现方框时用）
   prefix     打印当前使用的 WINEPREFIX 路径
+  bridge     启动 Linux 工具链桥并打印端口
   help       显示本帮助
 
 环境变量:
   WORKBUDDY_WIN_PREFIX   指定 prefix，默认 \$XDG_DATA_HOME/wineprefixes/${APP_ID}
+  WORKBUDDY_NO_LINUX_BASH=1  关闭 Bash 工具的 Linux 工具链桥
 EOF
 }
 
@@ -172,6 +176,83 @@ start_tray_dismiss() {
 		"$win_events" >/dev/null 2>&1 &
 }
 
+# WorkBuddy 自带的 PortableGit 在 Wine 下 fork 不出外部进程，Bash 工具只能跑
+# shell 内建。这里起一个宿主侧守护进程，把 wb-bash-proxy.exe 收到的脚本交给
+# 宿主的登录 shell 执行。详见 PITFALLS.md 第 19 条。
+read_bridge_state() {
+	local key value
+
+	BRIDGE_PID=''
+	BRIDGE_PORT=''
+	BRIDGE_TOKEN=''
+	[[ -r ${1} ]] || return 0
+	while IFS='=' read -r key value; do
+		case "$key" in
+		pid) BRIDGE_PID="$value" ;;
+		port) BRIDGE_PORT="$value" ;;
+		token) BRIDGE_TOKEN="$value" ;;
+		esac
+	done <"$1"
+}
+
+start_bash_bridge() {
+	local runtime state cmdline i
+
+	if [[ ${WORKBUDDY_NO_LINUX_BASH:-0} == 1 ]]; then
+		return 0
+	fi
+	# 用户自己指定了 Git Bash 时尊重原设置，不偷偷换掉。
+	if [[ -n ${CODEBUDDY_CODE_GIT_BASH_PATH:-} ]]; then
+		return 0
+	fi
+	if [[ ! -r ${BASH_BRIDGE} || ! -f ${BASH_PROXY} ]]; then
+		message "缺少 Linux 工具链桥文件，Bash 工具将使用自带 Git Bash"
+		return 0
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		message "缺少 python3，无法启动 Linux 工具链桥"
+		return 0
+	fi
+
+	runtime="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/${PKGNAME}"
+	mkdir -p -m 700 "$runtime" 2>/dev/null || true
+	state="${runtime}/bash-bridge.state"
+
+	read_bridge_state "$state"
+	if [[ -n ${BRIDGE_PID} && -n ${BRIDGE_PORT} && -n ${BRIDGE_TOKEN} ]] &&
+		kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+		cmdline=$(tr '\0' ' ' <"/proc/${BRIDGE_PID}/cmdline" 2>/dev/null || true)
+		if [[ ${cmdline} == *wb-bash-bridge.py* ]]; then
+			export WORKBUDDY_BASH_BRIDGE_PORT="${BRIDGE_PORT}"
+			export WORKBUDDY_BASH_BRIDGE_TOKEN="${BRIDGE_TOKEN}"
+			export CODEBUDDY_CODE_GIT_BASH_PATH="Z:${BASH_PROXY//\//\\}"
+			return 0
+		fi
+	fi
+
+	# 状态文件只记录本启动器自己的守护进程，旧文件直接作废。
+	rm -f "$state"
+	# bridge 不需要 wine 的 LD_PRELOAD / prefix 变量；它跑在宿主上。
+	env -u LD_PRELOAD -u WINEPREFIX -u WINEDEBUG -u WINEDLLOVERRIDES -u XMODIFIERS \
+		setsid python3 "$BASH_BRIDGE" --state-file "$state" --idle-timeout 1800 \
+		>>"${runtime}/bash-bridge.log" 2>&1 &
+
+	for i in {1..100}; do
+		[[ -s ${state} ]] && break
+		sleep 0.05
+	done
+	read_bridge_state "$state"
+	if [[ -z ${BRIDGE_PID} || -z ${BRIDGE_PORT} || -z ${BRIDGE_TOKEN} ]] ||
+		! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+		message "Linux 工具链桥启动失败，详见 ${runtime}/bash-bridge.log"
+		return 0
+	fi
+
+	export WORKBUDDY_BASH_BRIDGE_PORT="${BRIDGE_PORT}"
+	export WORKBUDDY_BASH_BRIDGE_TOKEN="${BRIDGE_TOKEN}"
+	export CODEBUDDY_CODE_GIT_BASH_PATH="Z:${BASH_PROXY//\//\\}"
+}
+
 ensure_prefix() {
 	app_installed || {
 		message "程序文件缺失：${APP_DIR}/WorkBuddy.exe，重装 ${PKGNAME} 后再试"
@@ -186,6 +267,46 @@ ensure_prefix() {
 	fi
 
 	apply_fonts
+}
+
+# WorkBuddy 的 Bash 工具默认套一层 tsbx.dll 沙箱（LsSDK_CreateSandbox +
+# LsInject 注入 x64 进程）。Wine 下注入必然失败，命令还没启动就报
+# SandboxError 0x6，所以新 prefix 默认把安全中心里的这个开关关掉。
+# 想保留沙箱设 WORKBUDDY_SANDBOX=1（当前 Wine 版本下不可用）。
+ensure_sandbox_off() {
+	local app_dir config
+
+	if [[ ${WORKBUDDY_SANDBOX:-0} == 1 ]]; then
+		return 0
+	fi
+	app_dir="${WINEPREFIX}/drive_c/users/$(id -un)/.workbuddy/app"
+	config="${app_dir}/app-config.json"
+	mkdir -p "$app_dir"
+	python3 - "$config" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+except FileNotFoundError:
+    data = {}
+except (OSError, ValueError):
+    # 文件损坏时交给应用自己重建，别把它覆盖成只剩一个键。
+    sys.exit(0)
+
+if not isinstance(data, dict) or "sandboxSafetyEnabled" in data:
+    sys.exit(0)
+
+data["sandboxSafetyEnabled"] = False
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.replace(tmp, path)
+PY
 }
 
 launch() {
@@ -205,22 +326,37 @@ main() {
 		;;
 	esac
 
-	normalize_stdio
-	setup_wine_env "$(resolve_prefix)"
+	# bridge/prefix 是给脚本读输出的，stdout 被重定向时也要保持原样。
+	case "${1:-}" in
+	bridge | prefix) ;;
+	*) normalize_stdio ;;
+	esac
 
 	case "${1:-}" in
+	bridge)
+		start_bash_bridge
+		printf 'port=%s\n' "${WORKBUDDY_BASH_BRIDGE_PORT:-}"
+		printf 'state=%s\n' "${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/${PKGNAME}/bash-bridge.state"
+		;;
 	prefix)
+		setup_wine_env "$(resolve_prefix)"
 		printf '%s\n' "${WINEPREFIX}"
 		;;
 	setup)
+		setup_wine_env "$(resolve_prefix)"
 		ensure_prefix
+		ensure_sandbox_off
 		;;
 	fontfix)
+		setup_wine_env "$(resolve_prefix)"
 		apply_fonts
 		;;
 	*)
 		# 其余参数原样透传，调试时要靠 --remote-debugging-port 之类
+		start_bash_bridge
+		setup_wine_env "$(resolve_prefix)"
 		ensure_prefix
+		ensure_sandbox_off
 		launch "$@"
 		;;
 	esac

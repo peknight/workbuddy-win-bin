@@ -378,3 +378,100 @@ prefix 都不动。
 
 **注意**：这个改动假定应用自己画组字串。真给不画 preedit 的老 Win32 程序用，
 会把回退显示一起关掉，用 `WINE_FIX_DISABLE=imm32` 跳过。
+
+## 19. Bash 工具跑不了任何外部命令
+
+**现象**：WorkBuddy 的 Bash 工具里 `echo` 有输出，`/bin/echo`、`ls`、`git`、
+`python3` 全都没有输出，退出码 1。界面看起来“命令执行了”，实际只有 shell
+内建生效。
+
+**原因**：应用自带 PortableGit 的 Cygwin 运行时在 Wine 下报
+`Couldn't compute FAST_CWD pointer`，`fork()` 直接失败。连 `cmd.exe`、
+`node.exe` 这类原生 Windows 程序也起不来，所以“放个假 exe 转调宿主命令”的
+想法也不行：那个 exe 本身就没进程能启动。
+
+网上常见的做法是文件队列：让 WorkBuddy 把脚本写到 `jobs/`，宿主 watcher 轮询
+执行，结果写到 `out/`，再往 MEMORY 里写使用规则。能用，但每次执行都要轮询和
+读写文件，Bash 工具变成异步的，模型还容易忘记规则。
+
+**解法**：应用认 `CODEBUDDY_CODE_GIT_BASH_PATH`，只要这个路径存在就把它当
+Git Bash。于是编一个原生 PE `wb-bash-proxy.exe` 顶上去，它收到
+`bash.exe -c <script>` 后通过 Wine 的 loopback 网络把脚本交给宿主守护进程
+`wb-bash-bridge.py`，后者用 `/bin/bash -lc` 同步执行，流式回传
+stdout/stderr 和退出码。启动器在拉起 WorkBuddy 前启动 bridge，并设置
+`CODEBUDDY_CODE_GIT_BASH_PATH=Z:\usr\lib\workbuddy-win-bin\wb-bash-proxy.exe`。
+
+**踩过的细节**：
+
+- 代理的 socket 不能在连接成功后还留着 `SO_RCVTIMEO`。最初设了 2 秒，任何
+  超过 2 秒且暂时没有输出的命令都会报 “bridge closed the connection”；正确
+  做法是只限制 `connect`，连上后阻塞等结果，由 WorkBuddy 的超时杀代理进程，
+  连接断开后守护进程再杀掉宿主命令的整个进程组。
+- 守护进程要用登录 shell（`bash -lc`），否则从桌面环境继承的 PATH 里没有
+  `JAVA_HOME`、coursier 这些，`java`/`mvn` 仍然找不到。
+- `bash -lc` 只读 `~/.profile`，不会读 `~/.profile_lowrisk`。需要 Maven 那套
+  环境时用 `WORKBUDDY_BASH_PROFILE=~/.profile_lowrisk` 启动，bridge 会在每条
+  命令前先 source 它。
+- 脚本要先把 Windows 路径换成宿主路径再交给 bash。未加引号的
+  `Z:\home\pek` 在 bash 里会被反斜杠转义成 `Z:homepek`，必须在执行前替换；
+  带空格的路径要连同引号一起替换。
+- 代理写 stdout/stderr 时必须区分管道和 Windows 控制台。控制台句柄会按当前
+  OEM 代码页转换字节，UTF-8 中文直接 `fwrite` 就成乱码；控制台要走
+  `WriteConsoleW`，并缓存上一帧末尾没拼完的最多 3 个字节。
+- bridge 由启动器在 `setup_wine_env` 之前拉起，并且显式清掉
+  `LD_PRELOAD`/`WINEPREFIX`，否则托盘 shape 修复库会被预加载进每一个宿主
+  命令。
+- 只监听 `127.0.0.1`，每次启动生成随机 token，状态文件 0600；本机其它用户
+  连不上，也猜不到 token。
+
+## 20. 窗口失焦时任务完成，整个 WorkBuddy 进程消失
+
+**现象**：让 agent 跑一个任务，然后把窗口切到别处。任务完成的一瞬间，
+WorkBuddy 窗口、托盘图标、进程树全部消失，没有报错弹窗。`main.log` 最后
+一行停在：
+
+```
+[TaskNotify] onEvent
+```
+
+没有 `completed:` 那一行，也没有 OOM、crashpad 报告或 Wine page fault。
+
+**原因**：任务完成时如果窗口没有焦点，主进程会走系统通知：
+
+```js
+if (!electron.Notification.isSupported()) return !1;
+...
+let e = new electron.Notification({ title: r, body: i, silent: !0 });
+```
+
+Electron 的 `isSupported()` 在 Windows 上只判断系统版本，Wine 里返回
+`true`；但 Wine 没有可用的 WinRT toast 实现，`show()` 直接把主进程带走，
+连异常都来不及抛。用主进程 inspector 直接执行
+`new Notification({title:"x",body:"y"}).show()` 可以稳定复现：WebSocket
+立刻断开，进程树清空。
+
+**解法**：`patch-workbuddy-asar.py` 在构建期改 `app.asar`，把四处
+`new electron.Notification({...})` 换成等长的空对象桩：
+
+```js
+{show(){},close(){},on(){return this}}
+```
+
+`on()` / `show()` / `close()` 调用点全部保留，函数照常返回 `true`，应用内
+完成提示和提示音不受影响，只是没有系统级 toast。
+
+**踩过的细节**：
+
+- 只替换 `showTaskNotification` 一处不够。`electron.Notification` 在
+  `main-bootstrap.js` 里共有四处（任务通知、desktop host 的
+  `sendNotification`、`SystemNotification`、关窗到托盘的提示），都受同一个
+  `isSupported()` 谎报影响，全部换掉。
+- 替换必须等长。`app.asar` 里其它文件的 offset 是绝对偏移，改长度就得重排
+  整个归档；用块注释把桩补齐到原表达式长度最省事。
+- 改完要重算 header 里这个文件的 SHA256（`integrity.hash` 和
+  `integrity.blocks`），否则 Electron 读 asar 会直接报校验失败。
+- 只改 asar 还不够：`WorkBuddy.exe` 里
+  `EnableEmbeddedAsarIntegrityValidation` fuse 是开的，校验的是打包时的
+  asar 哈希。脚本同时把这一个 fuse 从 `1` 翻成 `0`（fuse wire 里第 5 位，
+  前面 4 位是 RunAsNode / CookieEncryption / NodeOptionsEnv /
+  NodeCliInspect）。

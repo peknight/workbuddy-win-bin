@@ -2,7 +2,7 @@
 
 pkgname=workbuddy-win-bin
 pkgver=5.11.3.43806934
-pkgrel=18
+pkgrel=20
 pkgdesc='腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine'
 arch=('x86_64')
 url='https://copilot.tencent.com/'
@@ -16,6 +16,7 @@ depends=(
     'libx11'        # 托盘图标修复用的 LD_PRELOAD 小库
     'libxext'
     'libxi'         # 托盘菜单辅助进程用 XInput2 raw 事件记录点击/Esc
+    'python'        # Linux 工具链桥守护进程
     'wqy-microhei' # 中文字形来源，替换表把它填给 Tahoma / Noto Sans CJK 等家族
 )
 makedepends=(
@@ -48,12 +49,18 @@ source=(
     'tray-dismiss-x11.c'
     'workbuddy-protocol.c'
     'workbuddy-protocol.rc'
+    'wb-bash-bridge.py'
+    'wb-bash-proxy.c'
+    'patch-workbuddy-asar.py'
     'jsign-7.6.jar::https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar'
 )
 # NSIS 安装包由 prepare() 自己解；交给 makepkg 只会解出一层壳和 Uninstall.exe
 noextract=("${_exe}")
 sha256sums=(
     '2fd40059eea2f9a2d641c675a66f2476d71b49d9eb32f19db8c318768133b56b'
+    'SKIP'
+    'SKIP'
+    'SKIP'
     'SKIP'
     'SKIP'
     'SKIP'
@@ -86,6 +93,11 @@ prepare() {
 build() {
     cd "$srcdir"
 
+    # Wine 没有可用的 WinRT toast：任务完成通知会执行
+    # `new electron.Notification(...).show()`，主进程当场消失。
+    # 补丁把这几处换成空实现，并关掉 asar 完整性 fuse。见 PITFALLS.md 第 20 条。
+    python patch-workbuddy-asar.py app
+
     # Electron 的界面走 DirectWrite，自己带回退链；GDI 那一路（部分原生控件）
     # 按家族名取 Tahoma，而 wine 自带的 tahoma.ttf 没有汉字，所以派生一份。
     python make-tahoma.py \
@@ -112,6 +124,11 @@ build() {
     x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows \
         -o tray-dismiss.exe tray-dismiss.c -luser32
     cc -O2 -Wall -Wextra -o tray-dismiss-x11 tray-dismiss-x11.c -lXi -lX11
+
+    # Bash 工具的 Linux 桥：PE 侧只负责转发，宿主守护进程用登录 shell 执行。
+    # 详见 PITFALLS.md 第 19 条。
+    x86_64-w64-mingw32-gcc -O2 -s -municode \
+        -o wb-bash-proxy.exe wb-bash-proxy.c -lws2_32 -lshell32
 
     # 企业微信会读 workbuddy:// 注册表指向的 exe 的 FileVersion 做版本门槛。
     # winebrowser 没有版本资源，所以编一个和 WorkBuddy.exe 同版本号的转发器，
@@ -205,6 +222,10 @@ package() {
         "$pkgdir/usr/lib/$pkgname/tray-dismiss-x11"
     install -Dm644 "$srcdir/workbuddy-protocol.exe" \
         "$pkgdir/usr/lib/$pkgname/workbuddy-protocol.exe"
+    install -Dm755 "$srcdir/wb-bash-bridge.py" \
+        "$pkgdir/usr/lib/$pkgname/wb-bash-bridge.py"
+    install -Dm755 "$srcdir/wb-bash-proxy.exe" \
+        "$pkgdir/usr/lib/$pkgname/wb-bash-proxy.exe"
 
     local png size
     for png in "$srcdir"/icons/*.png; do

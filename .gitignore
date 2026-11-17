@@ -9,5 +9,6 @@ pkg/
 *.log
 *.o
 *.so
+__pycache__/
 workbuddy-protocol.build.rc
 jsign-*.jar
