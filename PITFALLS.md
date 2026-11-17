@@ -421,6 +421,10 @@ stdout/stderr 和退出码。启动器在拉起 WorkBuddy 前启动 bridge，并
 - bridge 由启动器在 `setup_wine_env` 之前拉起，并且显式清掉
   `LD_PRELOAD`/`WINEPREFIX`，否则托盘 shape 修复库会被预加载进每一个宿主
   命令。
+- `WORKBUDDY_BASH_PROFILE` 只在新起守护进程时生效。启动器原先只要状态文件
+  里的进程还活着就直接复用，改了 profile 也得等 30 分钟空闲超时才换，表现
+  是“设了也没用”。现在 bridge 把 profile 写进状态文件，启动器比对不一致就
+  收掉旧的重新起一个。
 - 只监听 `127.0.0.1`，每次启动生成随机 token，状态文件 0600；本机其它用户
   连不上，也猜不到 token。
 

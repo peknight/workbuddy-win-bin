@@ -185,18 +185,21 @@ read_bridge_state() {
 	BRIDGE_PID=''
 	BRIDGE_PORT=''
 	BRIDGE_TOKEN=''
+	BRIDGE_PROFILE=''
 	[[ -r ${1} ]] || return 0
 	while IFS='=' read -r key value; do
 		case "$key" in
 		pid) BRIDGE_PID="$value" ;;
 		port) BRIDGE_PORT="$value" ;;
 		token) BRIDGE_TOKEN="$value" ;;
+		profile) BRIDGE_PROFILE="$value" ;;
 		esac
 	done <"$1"
 }
 
 start_bash_bridge() {
-	local runtime state cmdline i
+	local runtime state cmdline profile old_pid i
+	local bridge_args
 
 	if [[ ${WORKBUDDY_NO_LINUX_BASH:-0} == 1 ]]; then
 		return 0
@@ -218,11 +221,19 @@ start_bash_bridge() {
 	mkdir -p -m 700 "$runtime" 2>/dev/null || true
 	state="${runtime}/bash-bridge.state"
 
+	# bridge 自己也会展开 ~，这里按同样规则摊平，好和状态文件里的值比对。
+	profile=''
+	if [[ -n ${WORKBUDDY_BASH_PROFILE:-} ]]; then
+		profile=${WORKBUDDY_BASH_PROFILE/#\~/$HOME}
+	fi
+
 	read_bridge_state "$state"
 	if [[ -n ${BRIDGE_PID} && -n ${BRIDGE_PORT} && -n ${BRIDGE_TOKEN} ]] &&
 		kill -0 "${BRIDGE_PID}" 2>/dev/null; then
 		cmdline=$(tr '\0' ' ' <"/proc/${BRIDGE_PID}/cmdline" 2>/dev/null || true)
-		if [[ ${cmdline} == *wb-bash-bridge.py* ]]; then
+		# profile 必须一致：复用一个没带 profile 的守护进程会让
+		# WORKBUDDY_BASH_PROFILE 静默失效。
+		if [[ ${cmdline} == *wb-bash-bridge.py* && ${BRIDGE_PROFILE} == "$profile" ]]; then
 			export WORKBUDDY_BASH_BRIDGE_PORT="${BRIDGE_PORT}"
 			export WORKBUDDY_BASH_BRIDGE_TOKEN="${BRIDGE_TOKEN}"
 			export CODEBUDDY_CODE_GIT_BASH_PATH="Z:${BASH_PROXY//\//\\}"
@@ -230,11 +241,25 @@ start_bash_bridge() {
 		fi
 	fi
 
+	# 复用了不同 profile 的旧守护进程：先收掉，同一个 state 只留一个。
+	if [[ -n ${BRIDGE_PID} ]] && kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+		old_pid=${BRIDGE_PID}
+		kill "$old_pid" 2>/dev/null || true
+		for i in {1..40}; do
+			kill -0 "$old_pid" 2>/dev/null || break
+			sleep 0.05
+		done
+	fi
+
 	# 状态文件只记录本启动器自己的守护进程，旧文件直接作废。
 	rm -f "$state"
+	bridge_args=(--state-file "$state" --idle-timeout 1800)
+	if [[ -n ${profile} ]]; then
+		bridge_args+=(--profile "$profile")
+	fi
 	# bridge 不需要 wine 的 LD_PRELOAD / prefix 变量；它跑在宿主上。
 	env -u LD_PRELOAD -u WINEPREFIX -u WINEDEBUG -u WINEDLLOVERRIDES -u XMODIFIERS \
-		setsid python3 "$BASH_BRIDGE" --state-file "$state" --idle-timeout 1800 \
+		setsid python3 "$BASH_BRIDGE" "${bridge_args[@]}" \
 		>>"${runtime}/bash-bridge.log" 2>&1 &
 
 	for i in {1..100}; do

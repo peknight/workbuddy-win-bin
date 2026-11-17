@@ -344,13 +344,16 @@ def parse_state(path: Path) -> dict[str, str]:
     return result
 
 
-def write_state(path: Path, pid: int, port: int, token: str) -> None:
+def write_state(path: Path, pid: int, port: int, token: str, profile: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f"{path.name}.{pid}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(f"pid={pid}\nport={port}\ntoken={token}\n")
+            # 启动器据此判断能不能复用：profile 变了就得换一个守护进程，
+            # 否则新设的 WORKBUDDY_BASH_PROFILE 会被静默忽略。
+            handle.write(f"profile={profile}\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
@@ -409,7 +412,7 @@ def main() -> int:
     )
     port = server.server_address[1]
     if args.state_file:
-        write_state(args.state_file, os.getpid(), port, token)
+        write_state(args.state_file, os.getpid(), port, token, profile)
 
     stop = threading.Event()
 
