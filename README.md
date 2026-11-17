@@ -24,18 +24,13 @@ makepkg -si
 - `tray-dismiss.exe` / `tray-dismiss-x11`：托盘菜单点外面时负责关闭，
   见 `PITFALLS.md` 第 15 条；
 - `workbuddy-protocol.exe`：带版本号的 `workbuddy://` 转发器，给企业微信
-  的版本检查用；
-- `winex11-xim-spot.so`：wine 的 X11 驱动，改了两处（组字时向应用查光标矩形、
-  再把它转成 `XNSpotLocation`），让输入法候选框跟随光标，见 `PITFALLS.md`
-  第 17 条。
+  的版本检查用。
 
-另外随包带一份改过 `programs/explorer/systray.c` 的
-`explorer-systray-foreground.exe`：wine 内置 explorer 在转发托盘右键点击时
-不抢前台，Electron 的托盘菜单会被 wineserver 的时间检查挡掉、弹不出来。补丁
-和重建脚本装在 `/usr/share/workbuddy-win-bin/`，详见 `PITFALLS.md` 第 13 条。
+需要 `7zip`、`imagemagick`、`python-fonttools`、`mingw-w64-gcc`。运行时依赖
+[`wine-fix`](https://github.com/peknight/wine-fix)：输入法候选框跟随光标、
+不再重复画组字串、托盘右键菜单可用，三处都要替换 wine 自己的二进制，启动器
+用 `wine-fix-run` 代替 `wine` 把它挂进去。
 
-需要 `7zip`、`imagemagick`、`python-fonttools`、`mingw-w64-gcc`。
-运行时用 `bubblewrap` 把 `winex11-xim-spot.so` 单点挂进 wine 的库路径。
 下载的安装包约 460M，装完约 1.3G。
 
 ## 首次运行
@@ -43,8 +38,7 @@ makepkg -si
 直接启动 `workbuddy-win`（或应用菜单里的 WorkBuddy）。首次会：
 
 1. 在 `$XDG_DATA_HOME/wineprefixes/workbuddy-win` 建 prefix；
-2. 往 prefix 里装派生 Tahoma、应用字体替换表，替换 prefix 里的
-   `explorer.exe`（修托盘右键菜单）；
+2. 往 prefix 里装派生 Tahoma、应用字体替换表；
 3. 拉起托盘菜单辅助进程，再启动 `WorkBuddy.exe --no-sandbox`。
 
 登录态和聊天数据都在 prefix 里，`pacman -Syu` 升级包不动 prefix，不用重新
@@ -108,6 +102,8 @@ xdg-mime query default x-scheme-handler/workbuddy
 - 输入框打不了中文：启动器补 `XMODIFIERS`，见 `PITFALLS.md` 第 16 条
 - 输入法候选框贴在窗口左下角：补丁版 `winex11.so` 先向应用查
   `IMR_QUERYCHARPOSITION`，再转成 `XNSpotLocation`，见 `PITFALLS.md` 第 17 条
+- 窗口左下角重复画一份正在输入的字：补丁版 `imm32.dll` 不再显示回退的 IME
+  UI 窗，见 `PITFALLS.md` 第 18 条
 
 细节见 `PITFALLS.md`。
 

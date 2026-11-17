@@ -159,10 +159,10 @@ wineserver 的 `set_foreground_window()`（`server/queue.c`）会拿调用方 in
 不会被时间检查拒掉；应用成了前台之后，它自己再抢前台就通过了。
 
 - 补丁：`explorer-systray-foreground.patch`（wine 11.22，
-  `programs/explorer/systray.c`）
-- 产物：`explorer-systray-foreground.exe`，重建方法见 `build-explorer.sh`
-- 启动器把它装进 prefix 的 `C:\windows\system32\explorer.exe`，并用
-  `WINEDLLOVERRIDES` 里的 `explorer.exe=n` 强制按 native 加载
+  `programs/explorer/systray.c`），产物和重建脚本在 `wine-fix` 仓库
+- 启动时由 `wine-fix-run` 挂到 prefix 的 `C:\windows\system32\explorer.exe`
+  和系统库目录的同名文件上；产物是去掉 `--wine-builtin` 标记重链过的 native
+  镜像，不需要额外的 `WINEDLLOVERRIDES`
 
 构建时有两个坑：
 
@@ -337,26 +337,44 @@ callbacks 模式下它拿不到预编辑高度。若 spot 取光标行的上沿
 （`pos.pt.y`），候选窗会正好压住正在输入的那一行；改成行底
 （`pos.pt.y + pos.cLineHeight`）后，候选窗落在下一行，和 GTK 应用观感一致。
 
-**打包方式**：wine 的 unix 库只按「发行版库目录 → `WINEDLLPATH`」顺序找
-（`dlls/ntdll/unix/loader.c: load_unixlib_by_name`），`WINEDLLPATH` 覆盖不了
-系统目录，直接往 `/usr/lib/wine/x86_64-unix/` 塞文件又会跟 wine 包的文件
-冲突。所以包里带一份编译好的 `winex11-xim-spot.so`，启动器用
-
-```bash
-bwrap --dev-bind / / --ro-bind "$so" "$wine_lib_dir/x86_64-unix/winex11.so" wine ...
-```
-
-起一个只属于本进程的挂载命名空间，单点把这份文件挂上去，系统文件不动。
+**打包方式**：补丁、产物和重建脚本都在 `wine-fix` 仓库，启动器用
+`/usr/bin/wine-fix-run` 代替 `wine`。它在只属于本次启动的挂载命名空间里把
+`winex11.so`、`imm32.dll`、`explorer.exe` 单点挂到系统路径上，系统文件和
+prefix 都不动。
 
 **注意**：
 
-- unix 库的 ABI 与 wine 版本绑定，包里带着
-  `winex11-xim-spot.wine-version`，启动器拿它跟 `wine --version` 比对，对不上
-  就退回原版库（输入法仍能用，只是候选框回到左下角），不会把 wine 弄崩。
-- `bwrap` 起不来（用户命名空间被内核或 LSM 限制）时同样退回原版库，
-  启动器会把原因写进 `$XDG_STATE_HOME/workbuddy-win-bin/launch.log`。
-- wine 升版后用 `build-winex11.sh` 按对应版本重编，别拿旧版本的 .so 硬顶。
+- unix 库的 ABI 与 wine 版本绑定，`wine-fix` 里带着
+  `wine-version`，`wine-fix-run` 拿它跟 `wine --version` 比对，对不上就不挂
+  `winex11`（输入法仍能用，只是候选框回到左下角），不会把 wine 弄崩。
+- `bwrap` 起不来（用户命名空间被内核或 LSM 限制）时退回原版 wine，
+  `wine-fix-run` 把原因写到 stderr，也就是启动器的
+  `$XDG_STATE_HOME/workbuddy-win-bin/launch.log`。
+- wine 升版后在 `wine-fix` 仓库跑 `build.sh` 按对应版本重编，别拿旧版本的
+  .so 硬顶。`wine-fix-status` 能看当前挂载了什么、跑的 wineserver 是不是从
+  `wine-fix-run` 起来的。
 - 排查用的 `probe-ime-charpos.c`、`probe-enum-windows.c` 只留在仓库里当诊断
   工具，不进包：前者往指定窗口发 `IMR_QUERYCHARPOSITION` 看应用回不回矩形，
   后者枚举进程里的 Win32 窗口和类名。交叉编译：
   `x86_64-w64-mingw32-gcc -municode -o probe.exe probe-ime-charpos.c -luser32`。
+
+## 18. 窗口左下角多画一份正在输入的字
+
+**现象**：输入法能打，候选框也跟着光标，但焦点窗口左下角（窗口外、紧贴窗口
+下边）额外画着正在输入的那几个字，和输入框里内联的那份重复。
+
+**原因**：不是 ibus 画的。`xwininfo -root -tree` 里能看到一个 42x36 的窗口，
+`WM_CLASS=workbuddy.exe`、`WM_TRANSIENT_FOR` 指向主窗口，位置在焦点窗口
+左下角，窗里就是两个 8x13 字形。这是 wine `dlls/imm32/ime.c` 的回退 IME UI
+窗：`ime_ui_update_window()` 在 `CFS_DEFAULT` 时把组字串画出来，按 Windows
+的老规矩摆在左下角。Chromium/Electron 自己已经把组字串内联画进页面，于是
+出现两份。
+
+**解法**：`wine-imm32-no-ime-ui-window.patch` 让
+`ime_ui_update_window()` 始终 `ShowWindow( hwnd, SW_HIDE )`，组字串仍照常经
+`WM_IME_COMPOSITION` 送进应用。补丁和产物在 `wine-fix` 仓库，`wine-fix-run`
+把 `imm32.dll` 挂到系统库目录和 prefix 的 `system32` 上——PE 内置库建 prefix
+时会被复制进 `drive_c/windows/system32`，只换系统库目录那份不生效。
+
+**注意**：这个改动假定应用自己画组字串。真给不画 preedit 的老 Win32 程序用，
+会把回退显示一起关掉，用 `WINE_FIX_DISABLE=imm32` 跳过。

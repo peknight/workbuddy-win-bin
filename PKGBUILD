@@ -2,7 +2,7 @@
 
 pkgname=workbuddy-win-bin
 pkgver=5.11.3.43806934
-pkgrel=17
+pkgrel=18
 pkgdesc='腾讯 WorkBuddy 国内版 Windows 客户端，基于发行版 wine 11 运行 | Tencent WorkBuddy (CN) Windows build on upstream wine'
 arch=('x86_64')
 url='https://copilot.tencent.com/'
@@ -10,13 +10,12 @@ license=('LicenseRef-proprietary')
 options=(!debug !strip)
 
 depends=(
-    'wine>=11.21'
+    'wine-fix'      # 按进程挂载的 wine 补丁（XIM 光标位置、IME UI 窗、托盘前台）
     'fontconfig'
     'hicolor-icon-theme'
     'libx11'        # 托盘图标修复用的 LD_PRELOAD 小库
     'libxext'
     'libxi'         # 托盘菜单辅助进程用 XInput2 raw 事件记录点击/Esc
-    'bubblewrap'    # 给 bwrap 单点挂载补丁版 winex11.so，见 PITFALLS.md 第 17 条
     'wqy-microhei' # 中文字形来源，替换表把它填给 Tahoma / Noto Sans CJK 等家族
 )
 makedepends=(
@@ -37,9 +36,6 @@ _app_name='WorkBuddy'
 # 官方文件名尾部的构建号，和版本号一起出现在更新接口的返回里
 _build='ecace0f7'
 _exe="WorkBuddy-win32-x64-user-${pkgver}-${_build}.exe"
-# 补丁版 winex11.so 对应的 wine 版本，启动器拿它跟 wine --version 比对，
-# 对不上就不挂载（unix 库 ABI 与版本绑定）
-_wine_ver='11.22'
 
 source=(
     "${_exe}::https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/${_exe}"
@@ -50,13 +46,6 @@ source=(
     'no-shaped-systray.c'
     'tray-dismiss.c'
     'tray-dismiss-x11.c'
-    'explorer-systray-foreground.exe'
-    'explorer-systray-foreground.patch'
-    'build-explorer.sh'
-    'winex11-xim-spot.so'
-    'wine-xim-spot-callbacks.patch'
-    'wine-xim-query-caret.patch'
-    'build-winex11.sh'
     'workbuddy-protocol.c'
     'workbuddy-protocol.rc'
     'jsign-7.6.jar::https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar'
@@ -65,13 +54,6 @@ source=(
 noextract=("${_exe}")
 sha256sums=(
     '2fd40059eea2f9a2d641c675a66f2476d71b49d9eb32f19db8c318768133b56b'
-    'SKIP'
-    'SKIP'
-    'SKIP'
-    'SKIP'
-    'SKIP'
-    'SKIP'
-    'SKIP'
     'SKIP'
     'SKIP'
     'SKIP'
@@ -221,27 +203,6 @@ package() {
         "$pkgdir/usr/lib/$pkgname/tray-dismiss.exe"
     install -Dm755 "$srcdir/tray-dismiss-x11" \
         "$pkgdir/usr/lib/$pkgname/tray-dismiss-x11"
-    # 托盘右键菜单用，见 PITFALLS.md 第 13 条；补丁和重建脚本一起装，
-    # wine 升版后可以照着重出一份
-    install -Dm755 "$srcdir/explorer-systray-foreground.exe" \
-        "$pkgdir/usr/lib/$pkgname/explorer-systray-foreground.exe"
-    install -Dm644 "$srcdir/explorer-systray-foreground.patch" \
-        "$pkgdir/usr/share/$pkgname/explorer-systray-foreground.patch"
-    install -Dm755 "$srcdir/build-explorer.sh" \
-        "$pkgdir/usr/share/$pkgname/build-explorer.sh"
-    # 输入法候选框跟随光标（见 PITFALLS.md 第 17 条）。unix 库 ABI 跟 wine 版本
-    # 绑定，把编译时的 wine 版本一起装上，启动器对不上就不挂载。补丁和重建脚本
-    # 一并安装，wine 升版后照着重出一份。
-    install -Dm755 "$srcdir/winex11-xim-spot.so" \
-        "$pkgdir/usr/lib/$pkgname/winex11-xim-spot.so"
-    printf 'wine-%s\n' "$_wine_ver" \
-        >"$pkgdir/usr/lib/$pkgname/winex11-xim-spot.wine-version"
-    install -Dm644 "$srcdir/wine-xim-spot-callbacks.patch" \
-        "$pkgdir/usr/share/$pkgname/wine-xim-spot-callbacks.patch"
-    install -Dm644 "$srcdir/wine-xim-query-caret.patch" \
-        "$pkgdir/usr/share/$pkgname/wine-xim-query-caret.patch"
-    install -Dm755 "$srcdir/build-winex11.sh" \
-        "$pkgdir/usr/share/$pkgname/build-winex11.sh"
     install -Dm644 "$srcdir/workbuddy-protocol.exe" \
         "$pkgdir/usr/lib/$pkgname/workbuddy-protocol.exe"
 
