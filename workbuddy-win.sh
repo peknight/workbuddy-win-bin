@@ -170,10 +170,62 @@ start_tray_dismiss() {
 	# Wine 把 Z: 映射到宿主根目录，路径分隔符要换成反斜杠
 	win_events="Z:${events//\//\\}"
 
-	# helper 不需要托盘 shape 修复，别让它继承 LD_PRELOAD 里的 X11 拦截库
+	# X11 helper 不建桌面窗口，摘掉 LD_PRELOAD 里的 X11 拦截库。
 	env -u LD_PRELOAD setsid "${TRAY_DISMISS_X11}" "$events" >/dev/null 2>&1 &
-	env -u LD_PRELOAD setsid "${WINE_LAUNCH[@]}" "${TRAY_DISMISS_EXE}" \
+	# Wine 那个 helper 必须留着 LD_PRELOAD：wine 里谁第一个取桌面窗口
+	# （GetDesktopWindow）就由谁 fork 出 explorer.exe，并把自己的环境块原样
+	# 复制过去（dlls/win32u/winstation.c get_desktop_window）。这个 helper
+	# 一起来就枚举窗口，总是它先拿到桌面窗口；摘掉 LD_PRELOAD 等于让 explorer
+	# 永远加载不到 shape 修复库，托盘黑底边框复现。见 PITFALLS.md 第 6 条。
+	setsid "${WINE_LAUNCH[@]}" "${TRAY_DISMISS_EXE}" \
 		"$win_events" >/dev/null 2>&1 &
+}
+
+# 托盘修复库只在 explorer.exe 里生效（见 start_tray_dismiss），而 explorer 是
+# 谁先取桌面窗口就由谁 fork 出来的。旧版启动器起的会话里 explorer 没带库，
+# 这套会话又不会自己消失：WorkBuddy 退出后 tray-dismiss.exe 还握着 wineserver，
+# 下次启动直接接上旧会话，explorer 还是那一个，于是"退出重开"根本换不掉它，
+# 黑底边框看起来像复现。启动前先看一眼本 prefix 的桌面，是旧的、且应用已经
+# 退出，就把整套 wine 会话收掉，让这次启动自己建一个干净的。
+reset_stale_desktop() {
+	local noshape="${SHARE}/no-shaped-systray.so"
+	local prefix_env="WINEPREFIX=${WINEPREFIX}"
+	local proc desktop=0 app_running=0 stale=0 i
+	local -a stale_pids=()
+
+	[[ -f ${noshape} ]] || return 0
+	command -v wineserver >/dev/null 2>&1 || return 0
+
+	for proc in /proc/[0-9]*; do
+		[[ -r ${proc}/environ && -r ${proc}/cmdline ]] || continue
+		tr '\0' '\n' <"${proc}/environ" 2>/dev/null |
+			grep -qxF -- "$prefix_env" || continue
+		case "$(tr '\0' ' ' <"${proc}/cmdline" 2>/dev/null || true)" in
+		*explorer.exe*desktop*)
+			desktop=1
+			if ! tr '\0' '\n' <"${proc}/environ" 2>/dev/null |
+				grep -qF -- 'no-shaped-systray.so'; then
+				stale=1
+				stale_pids+=("${proc#/proc/}")
+			fi
+			;;
+		*WorkBuddy.exe*) app_running=1 ;;
+		esac
+	done
+
+	((desktop && stale)) || return 0
+	if ((app_running)); then
+		message "当前 WorkBuddy 接着一套没带托盘修复的旧 wine 会话，托盘图标可能还是黑底边框；"
+		message "完全退出 WorkBuddy 后重新启动即可（旧会话会被自动收掉）。"
+		return 0
+	fi
+
+	message "清理旧的 wine 会话：explorer.exe 没有带上托盘修复库（pid ${stale_pids[*]}）"
+	wineserver -k 2>/dev/null || true
+	for i in {1..100}; do
+		tr '\0' ' ' </proc/"${stale_pids[0]}"/cmdline >/dev/null 2>&1 || break
+		sleep 0.05
+	done
 }
 
 # WorkBuddy 自带的 PortableGit 在 Wine 下 fork 不出外部进程，Bash 工具只能跑
@@ -338,6 +390,7 @@ launch() {
 	# Electron 的沙箱要 chrome-sandbox 带 setuid，而 /usr/lib 下这份是 root:root
 	# 的普通文件，非 root 启动只能关掉沙箱（应用本身仍有 Win32 作业对象隔离）。
 	# 用户显式传了 --no-sandbox 也照样透传，重复无所谓。
+	reset_stale_desktop
 	cd "${APP_DIR}"
 	start_tray_dismiss
 	exec "${WINE_LAUNCH[@]}" WorkBuddy.exe --no-sandbox "$@"

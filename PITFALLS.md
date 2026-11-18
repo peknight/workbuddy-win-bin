@@ -55,6 +55,32 @@ Wine 会给托盘里的 XEMBED 窗口设 bounding shape（实测 22x22 窗口有
 只 `XShapeCombineMask(..., ShapeBounding, ..., None, ...)`，不碰
 `ShapeInput`，也不设空矩形（空矩形会让窗口点不到）。
 
+**库必须进 `explorer.exe`，不是主进程**：托盘窗口是 explorer 画的，所以
+`LD_PRELOAD` 只有落在 explorer 进程里才有用。wine 里没有独立启动 explorer
+的步骤，谁第一个取桌面窗口（`GetDesktopWindow`）就由谁 `NtCreateUserProcess`
+出 `explorer.exe /desktop`，并把**那个进程的环境块原样复制过去**
+（`dlls/win32u/winstation.c` 的 `get_desktop_window`）。实测同一个
+tray-dismiss helper，带 `LD_PRELOAD` 起时 explorer 有该变量，`env -u` 起时
+explorer 没有，其它环境一模一样。
+
+**复现原因**：启动器在 exec 主程序前先拉 tray-dismiss helper，
+而 helper 一启动就 `EnumWindows`，比 Electron 建首个窗口早得多，桌面窗口
+总是它先拿到。它当时用 `env -u LD_PRELOAD` 摘掉变量（理由只是"helper 不
+建托盘窗口"），于是 explorer 从它那里继承了干净环境，shape 修复从此失效。
+主进程自己带着 `LD_PRELOAD` 也没用——那只是它自己的进程。
+
+**现在的约定**：Wine 侧的 helper 保留 `LD_PRELOAD`（它不建托盘窗口，库对它
+无副作用）；只有宿主 X11 侧的 `tray-dismiss-x11` 摘掉。这样无论 helper 和
+主程序谁先抢到桌面窗口，explorer 都带得上修复库。
+
+**改完还会"复现"一次**：只在应用里退出再打开是不够的。`tray-dismiss.exe`
+退出前一直握着 wineserver，WorkBuddy 退出后那套 wine 会话（wineserver +
+explorer.exe）还活着，下次启动直接 join 进去，托盘还是旧 explorer 画的，
+库再新也进不去。所以启动器现在每次启动前扫一遍本 prefix 的
+`explorer.exe /desktop`：环境里没有 `no-shaped-systray.so` 且当前没有
+`WorkBuddy.exe` 在跑，就 `wineserver -k` 把旧会话收掉重建；应用还在跑时只
+提示一句，不动用户的窗口。手工验证同样要 `wineserver -k` 才算"重开"。
+
 ## 7. 企业微信提示“WorkBuddy 版本过低”
 
 **现象**：WorkBuddy 已经是最新版，企业微信机器人会话里点跳转登录仍弹
